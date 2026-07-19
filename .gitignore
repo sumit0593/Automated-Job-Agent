@@ -1,0 +1,23 @@
+# Virtual environment
+.venv/
+__pycache__/
+*.pyc
+
+# Local Database & Secrets (Security Critical)
+secret.key
+job_agent.db
+job_agent.db-journal
+.env
+
+# Vector Database Data
+qdrant_db/
+
+# Frontend builds & dependencies
+node_modules/
+dist/
+.vite/
+
+# Application Resumes Storage
+storage/resumes/
+storage/tailored_resumes/
+backend/storage/
