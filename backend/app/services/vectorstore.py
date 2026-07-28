@@ -121,12 +121,12 @@ class VectorStoreService:
         )
         logger.info(f"Indexed resume {resume_id} in Qdrant")
 
-    def search_similar_jobs(self, resume_text: str, resume_skills: List[str], limit: int = 20) -> List[Dict[str, Any]]:
+    def search_similar_jobs(self, resume_text: str, resume_skills: List[str], limit: int = 100) -> List[Dict[str, Any]]:
         """
         Executes a hybrid matching and reranking pipeline:
-        1. Dense retrieval using Qdrant (top 50 candidate jobs).
+        1. Dense retrieval using Qdrant (top candidate jobs up to limit).
         2. Lexical/keyword alignment check (skills intersection).
-        3. Local BGE-Reranker-Large cross-encoder validation for top 10 scoring jobs.
+        3. Local BGE-Reranker-Large cross-encoder validation.
         """
         self.ensure_collections()
         
@@ -135,7 +135,7 @@ class VectorStoreService:
         search_results = self.client.search(
             collection_name=settings.QDRANT_COLLECTION_JOBS,
             query_vector=resume_embedding,
-            limit=50
+            limit=limit
         )
         
         candidates = []

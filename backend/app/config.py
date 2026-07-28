@@ -10,9 +10,11 @@ STORAGE_DIR = BASE_DIR / "storage"
 RESUMES_DIR = STORAGE_DIR / "resumes"
 TAILORED_RESUMES_DIR = STORAGE_DIR / "tailored_resumes"
 LOGS_DIR = STORAGE_DIR / "logs"
+BROWSER_PROFILES_DIR = STORAGE_DIR / "browser_profiles"
+SCREENSHOTS_DIR = STORAGE_DIR / "screenshots"
 
 # Ensure storage directories exist
-for directory in [STORAGE_DIR, RESUMES_DIR, TAILORED_RESUMES_DIR, LOGS_DIR]:
+for directory in [STORAGE_DIR, RESUMES_DIR, TAILORED_RESUMES_DIR, LOGS_DIR, BROWSER_PROFILES_DIR, SCREENSHOTS_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
 class Settings(BaseSettings):
@@ -34,8 +36,9 @@ class Settings(BaseSettings):
     # print(os.getenv("HF_TOKEN"))
     
     # LLM & Embeddings Settings
-    HF_TOKEN: str = os.getenv("HF_TOKEN")  # Hugging Face token for Inference API
-    LLM_MODEL: str = "Qwen/Qwen2.5-72B-Instruct"  # High performance open source model
+    HF_TOKEN: str = os.getenv("HF_TOKEN", "")  # Hugging Face token for Inference API
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")  # Google Gemini API key
+    LLM_MODEL: str = "Qwen/Qwen2.5-72B-Instruct"  # High-performance serverless router model
     EMBEDDINGS_MODEL: str = "BAAI/bge-m3"
     RERANKER_MODEL: str = "BAAI/bge-reranker-large"
     

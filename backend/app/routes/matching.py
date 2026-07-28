@@ -8,111 +8,73 @@ import logging
 logger = logging.getLogger("uvicorn.error")
 router = APIRouter(prefix="/matching", tags=["Matching"])
 
+from backend.app.services.matching.agentic_rag import agentic_rag
+
 @router.get("/match")
 def match_resume_to_jobs(
     resume_id: int = Query(..., description="ID of the resume to match"),
-    limit: int = Query(10, description="Max matches to return"),
+    limit: int = Query(50, description="Max matches to return"),
+    min_score: float = Query(50.0, description="Minimum match score threshold (0-100)"),
     db: Session = Depends(get_db)
 ):
     """
-    Retrieves similar jobs for a resume using hybrid retrieval (Qdrant) and
-    runs cross-encoder reranking (BGE-Reranker-Large) for top results.
-    Creates or updates Application matching entries in the DB.
+    Executes the Agentic RAG Retrieval & Reranking Pipeline:
+    - HyDE & Query Enhancement
+    - Hybrid Vector + BM25 Search
+    - Self-RAG & Corrective RAG (CRAG) adaptive retries
+    - Cross-Encoder Reranking + MMR Deduplication
+    - Grounded match breakdown & RAG metrics evaluation
     """
     resume = db.query(models.Resume).filter(models.Resume.id == resume_id).first()
     if not resume:
         raise HTTPException(status_code=404, detail="Resume not found")
         
-    # 1. Run Hybrid Search in Qdrant
-    try:
-        # Get list of top jobs from Qdrant sorted by hybrid score
-        qdrant_candidates = vector_store.search_similar_jobs(
-            resume_text=resume.raw_text,
-            resume_skills=resume.parsed_skills or [],
-            limit=20
-        )
-    except Exception as e:
-        logger.error(f"Qdrant retrieval error: {e}")
-        # DB-based fallback retrieval if Qdrant isn't fully ready
-        db_jobs = db.query(models.Job).all()
-        qdrant_candidates = []
-        for j in db_jobs:
-            qdrant_candidates.append({
-                "job_id": j.id,
-                "title": j.title,
-                "company": j.company,
-                "dense_score": 0.5,
-                "overlap_score": 0.5,
-                "hybrid_score": 0.5
-            })
-
-    if not qdrant_candidates:
-        return {"matches": []}
-        
-    # 2. Fetch full descriptions from database to prepare for reranking
-    candidates_to_rerank = []
-    job_map = {}
-    for cand in qdrant_candidates:
-        job = db.query(models.Job).filter(models.Job.id == cand["job_id"]).first()
-        if job:
-            job_map[job.id] = job
-            candidates_to_rerank.append({
-                "job_id": job.id,
-                "title": job.title,
-                "company": job.company,
-                "description": job.description,
-                "dense_score": cand["dense_score"],
-                "overlap_score": cand["overlap_score"],
-                "hybrid_score": cand["hybrid_score"]
-            })
-            
-    # 3. Apply Cross-Encoder Reranking
-    reranked_results = vector_store.rerank_jobs(
-        resume_text=resume.raw_text,
-        jobs=candidates_to_rerank,
-        limit=limit
+    rag_result = agentic_rag.run_matching_pipeline(
+        resume=resume,
+        db=db,
+        limit=limit,
+        min_score=min_score
     )
+
+    matches = rag_result["matches"]
     
-    # 4. Upsert matches in the Applications database table
+    # Upsert application records in SQLite database
     output = []
-    for cand in reranked_results:
+    for cand in matches:
         job_id = cand["job_id"]
-        job_obj = job_map[job_id]
         match_percentage = cand["match_percentage"]
-        
-        # Check if Application already exists
+        app_type = cand.get("application_type", "Unknown")
+
         app = db.query(models.Application).filter(
             models.Application.resume_id == resume.id,
             models.Application.job_id == job_id
         ).first()
-        
+
         if not app:
-            # Create a new "matched" entry
             app = models.Application(
                 resume_id=resume.id,
                 job_id=job_id,
                 status="matched",
-                match_score=float(match_percentage)
+                match_score=float(match_percentage),
+                application_type=app_type
             )
             db.add(app)
         else:
-            # Update match score
             app.match_score = float(match_percentage)
-            
+            app.application_type = app_type
+
         db.commit()
         db.refresh(app)
-        
-        output.append({
-            "application_id": app.id,
-            "job_id": job_id,
-            "title": job_obj.title,
-            "company": job_obj.company,
-            "location": job_obj.location,
-            "match_percentage": match_percentage,
-            "status": app.status
-        })
-        
-    return {"matches": output}
+
+        cand_output = dict(cand)
+        cand_output["application_id"] = app.id
+        cand_output["status"] = app.status
+        output.append(cand_output)
+
+    return {
+        "matches": output,
+        "pipeline_meta": rag_result.get("pipeline_meta", {})
+    }
 
 @router.get("/debug")
 def debug_qdrant(db: Session = Depends(get_db)):

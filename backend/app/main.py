@@ -9,17 +9,25 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backend.app.config import settings
 from backend.app.database import engine, Base
-from backend.app.routes import resumes, jobs, matching, applications, credentials
+from backend.app.routes import resumes, jobs, matching, applications, credentials, profile
 from backend.app.services.vectorstore import vector_store
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("uvicorn.error")
 
-# Create database tables
+# Create database tables & handle lightweight schema migrations
 try:
     logger.info("Initializing database schemas...")
     Base.metadata.create_all(bind=engine)
+    with engine.connect() as conn:
+        from sqlalchemy import text
+        try:
+            conn.execute(text("ALTER TABLE applications ADD COLUMN application_type VARCHAR DEFAULT 'Unknown'"))
+            conn.commit()
+            logger.info("Added missing 'application_type' column to applications table.")
+        except Exception:
+            pass  # Column already exists
 except Exception as e:
     logger.critical(f"Database table initialization failed: {e}")
 
@@ -45,6 +53,7 @@ app.include_router(jobs.router, prefix="/api")
 app.include_router(matching.router, prefix="/api")
 app.include_router(applications.router, prefix="/api")
 app.include_router(credentials.router, prefix="/api")
+app.include_router(profile.router)
 
 @app.on_event("startup")
 def startup_event():

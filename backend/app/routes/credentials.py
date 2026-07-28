@@ -7,6 +7,7 @@ from backend.app.database import get_db
 from backend.app import models
 from backend.app.services.encryption import encrypt_password, decrypt_password
 from backend.app.services.scraper import login_to_platform
+from backend.app.services.session_manager import is_session_valid, get_credential
 import logging
 
 logger = logging.getLogger("uvicorn.error")
@@ -26,7 +27,7 @@ def list_credentials(db: Session = Depends(get_db)):
             "id": c.id,
             "platform": c.platform,
             "username": c.username,
-            "has_session": c.session_cookies is not None,
+            "has_session": c.session_cookies is not None and is_session_valid(c),
             "last_login_at": c.last_login_at
         }
         for c in creds
@@ -65,7 +66,12 @@ def save_credential(req: CredentialRequest, db: Session = Depends(get_db)):
     }
 
 async def run_test_and_save_session(platform: str, username: str):
-    """Background task to test login and save active session cookies."""
+    """
+    Background task to test login and save active session cookies.
+    
+    IMPORTANT: Creates its own DB session since background tasks outlive
+    the request-scoped session.
+    """
     from backend.app.database import SessionLocal
     db_session = SessionLocal()
     try:
@@ -84,7 +90,7 @@ async def run_test_and_save_session(platform: str, username: str):
             cred.session_cookies = cookies
             cred.last_login_at = datetime.utcnow()
             db_session.commit()
-            logger.info(f"Background session check for {platform} succeeded. Cookies saved.")
+            logger.info(f"Background session check for {platform} succeeded. {len(cookies)} cookies saved.")
         else:
             logger.warning(f"Failed to save session for {platform}: No cookies returned or credentials removed.")
     except Exception as e:
@@ -107,8 +113,8 @@ def test_credential_connection(
     db: Session = Depends(get_db)
 ):
     """
-    Triggers a background Playwright browser session that logs into the job board,
-    authenticates cookies, and saves session credentials.
+    Triggers a background Playwright browser session that logs into the job board
+    using a PERSISTENT browser profile, authenticates, and saves session state.
     """
     platform_name = platform.lower().strip()
     cred = db.query(models.UserCredential).filter(models.UserCredential.platform == platform_name).first()

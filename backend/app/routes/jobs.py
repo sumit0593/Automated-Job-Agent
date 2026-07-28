@@ -15,11 +15,12 @@ async def scrape_jobs(
     query: str = Query(..., description="Company name (e.g. stripe) or job keyword (e.g. python)"),
     location: str = Query("", description="City or region filter"),
     platform: Optional[str] = Query(None, description="Optional platform: 'linkedin' or 'naukri'"),
+    max_jobs: int = Query(100, description="Maximum number of jobs to fetch (default: 100)"),
     db: Session = Depends(get_db)
 ):
     """
-    Triggers job scraper. If a platform is specified, uses saved session cookies to login and crawl.
-    Otherwise, queries Greenhouse/Lever public boards directly.
+    Triggers job scraper. If a platform is specified, uses persistent browser profile 
+    with saved session to crawl. Otherwise, queries Greenhouse/Lever public boards directly.
     """
     scraped_list = []
     
@@ -37,7 +38,8 @@ async def scrape_jobs(
             platform=plat_name,
             cookies=cred.session_cookies,
             keyword=query,
-            location=location
+            location=location,
+            max_jobs=max_jobs,
         )
     else:
         scraped_list = search_jobs_on_web(query, location)

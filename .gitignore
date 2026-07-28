@@ -20,4 +20,6 @@ dist/
 # Application Resumes Storage
 storage/resumes/
 storage/tailored_resumes/
+storage/browser_profiles/
+storage/screenshots/
 backend/storage/

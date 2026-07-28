@@ -31,7 +31,7 @@ function App() {
   
   // Scraper & Jobs states
   const [jobs, setJobs] = useState([]);
-  const [scrapingQuery, setScrapingQuery] = useState("Stripe");
+  const [scrapingQuery, setScrapingQuery] = useState("");
   const [scrapingLocation, setScrapingLocation] = useState("");
   const [scrapingPlatform, setScrapingPlatform] = useState(""); // "", "linkedin", "naukri"
   const [isScraping, setIsScraping] = useState(false);
@@ -48,6 +48,8 @@ function App() {
 
   // Matching & Application states
   const [matches, setMatches] = useState([]);
+  const [pipelineMeta, setPipelineMeta] = useState(null);
+  const [matchThreshold, setMatchThreshold] = useState(50);
   const [selectedAppId, setSelectedAppId] = useState(null);
   const [appDetail, setAppDetail] = useState(null);
   const [isTailoring, setIsTailoring] = useState(false);
@@ -55,9 +57,33 @@ function App() {
 
   // User input states for Playwright applying
   const [applicantInfo, setApplicantInfo] = useState({
-    firstName: "John",
-    lastName: "Doe",
-    email: "johndoe@example.com"
+    firstName: "",
+    lastName: "",
+    email: "",
+    phone: ""
+  });
+
+  // User Profile & Answer Bank states
+  const [userProfileData, setUserProfileData] = useState({
+    name: "Sumit Kumar",
+    email: "sumit@gmail.com",
+    phone: "+91 7011676185",
+    experience_years: 3.0,
+    current_ctc: "₹5 LPA",
+    expected_ctc: "₹8 LPA",
+    notice_period: "Immediate",
+    current_location: "Noida",
+    preferred_locations: ["Noida", "Delhi", "Gurgaon", "Remote"],
+    work_authorization: "India",
+    willing_to_relocate: "Yes",
+    remote_preference: "Hybrid"
+  });
+
+  const [answerBankData, setAnswerBankData] = useState({
+    why_join: "I enjoy building production-grade AI systems, multi-agent frameworks, and scalable cloud architectures.",
+    strengths: "Problem solving, backend engineering, GenAI, multi-agent systems, and Python microservices.",
+    career_goal: "To become a Lead AI Platform Engineer building scalable agentic systems.",
+    why_leaving: "Seeking higher impact roles specializing in Generative AI and Multi-Agent Orchestration."
   });
 
   // Health check
@@ -66,10 +92,68 @@ function App() {
   // Terminal scroll reference
   const terminalEndRef = useRef(null);
 
+  const fetchUserProfile = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/profile/`);
+      if (res.ok) {
+        const data = await res.json();
+        setUserProfileData(data);
+      }
+    } catch (e) {
+      console.warn("Could not fetch user profile", e);
+    }
+  };
+
+  const fetchAnswerBank = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/profile/answers`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.answers) setAnswerBankData(data.answers);
+      }
+    } catch (e) {
+      console.warn("Could not fetch answer bank", e);
+    }
+  };
+
+  const handleSaveUserProfile = async (e) => {
+    if (e) e.preventDefault();
+    try {
+      const res = await fetch(`${API_BASE}/profile/`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(userProfileData)
+      });
+      if (res.ok) {
+        alert("Candidate Profile updated successfully!");
+      }
+    } catch (e) {
+      alert(`Failed to save profile: ${e.message}`);
+    }
+  };
+
+  const handleSaveAnswerEntry = async (key, value) => {
+    try {
+      const res = await fetch(`${API_BASE}/profile/answers`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question_key: key, stored_answer: value })
+      });
+      if (res.ok) {
+        fetchAnswerBank();
+        alert(`Answer for '${key}' updated in Answer Bank!`);
+      }
+    } catch (e) {
+      alert(`Failed to save answer: ${e.message}`);
+    }
+  };
+
   useEffect(() => {
     fetchResumes();
     fetchJobs();
     fetchCredentials();
+    fetchUserProfile();
+    fetchAnswerBank();
     checkHealth();
   }, []);
 
@@ -290,10 +374,11 @@ function App() {
     }
     setIsMatching(true);
     try {
-      const res = await fetch(`${API_BASE}/matching/match?resume_id=${activeResumeId}`);
+      const res = await fetch(`${API_BASE}/matching/match?resume_id=${activeResumeId}&min_score=${matchThreshold}`);
       if (res.ok) {
         const data = await res.json();
-        setMatches(data.matches);
+        setMatches(data.matches || []);
+        setPipelineMeta(data.pipeline_meta || null);
         setActiveTab("matching");
       }
     } catch (e) {
@@ -301,6 +386,14 @@ function App() {
     } finally {
       setIsMatching(false);
     }
+  };
+
+  const getJobApplyType = (url) => {
+    if (!url) return "External Website";
+    const u = url.toLowerCase();
+    if (u.includes("linkedin.com") || u.includes("naukri.com")) return "Easy Apply";
+    if (u.includes("greenhouse.io") || u.includes("lever.co") || u.includes("workday") || u.includes("ashbyhq") || u.includes("icims") || u.includes("smartrecruiters") || u.includes("bamboohr") || u.includes("taleo")) return "External Website";
+    return "External Website";
   };
 
   const fetchApplicationDetail = async (appId, resetLoading = true) => {
@@ -368,6 +461,7 @@ function App() {
           first_name: applicantInfo.firstName,
           last_name: applicantInfo.lastName,
           email: applicantInfo.email,
+          phone: applicantInfo.phone,
           headful: true
         })
       });
@@ -454,8 +548,15 @@ function App() {
           className={`tab-btn ${activeTab === 'upload' ? 'active' : ''}`}
           onClick={() => setActiveTab("upload")}
         >
-          <FileText size={18} style={{ verticalAlign: 'middle', marginRight: '6px' }} />
-          1. Resume & Accounts
+          <User size={18} style={{ verticalAlign: 'middle', marginRight: '6px' }} />
+          1. Candidate Profile & Accounts
+        </button>
+        <button 
+          className={`tab-btn ${activeTab === 'crawler' ? 'active' : ''}`}
+          onClick={() => setActiveTab("crawler")}
+        >
+          <Search size={18} style={{ verticalAlign: 'middle', marginRight: '6px' }} />
+          2. Job Discovery Crawler ({jobs.length})
         </button>
         <button 
           className={`tab-btn ${activeTab === 'matching' ? 'active' : ''}`}
@@ -463,7 +564,7 @@ function App() {
           disabled={!activeResumeId}
         >
           <Briefcase size={18} style={{ verticalAlign: 'middle', marginRight: '6px' }} />
-          2. Match Rankings ({matches.length})
+          3. Match Rankings ({matches.length})
         </button>
         <button 
           className={`tab-btn ${activeTab === 'applications' ? 'active' : ''}`}
@@ -471,11 +572,11 @@ function App() {
           disabled={!selectedAppId}
         >
           <Sparkles size={18} style={{ verticalAlign: 'middle', marginRight: '6px' }} />
-          3. Tailoring & Apply
+          4. Tailoring & Apply
         </button>
       </div>
 
-      {/* Tab 1: Upload & Accounts Connection */}
+      {/* Tab 1: Candidate Profile & Accounts (Merged Tab 1 + Tab 4) */}
       {activeTab === "upload" && (
         <div className="dashboard-grid">
           {/* Left Column: CV uploads & Saved Credentials */}
@@ -585,16 +686,6 @@ function App() {
                       )}
                     </div>
                   )}
-                  
-                  <button 
-                    className="btn btn-primary" 
-                    onClick={handleMatchResume} 
-                    disabled={isMatching}
-                    style={{ width: '100%', marginTop: '1.25rem' }}
-                  >
-                    {isMatching ? 'Searching Qdrant...' : 'Compute Match Rankings'}
-                    <ArrowRight size={16} />
-                  </button>
                 </div>
               )}
             </div>
@@ -705,81 +796,149 @@ function App() {
             </div>
           </div>
 
-          {/* Right Column: Scraper & Crawl List */}
-          <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-            <div>
-              <h2 className="gradient-text" style={{ fontSize: '1.25rem', fontWeight: 700 }}>Job Discovery Crawler</h2>
-              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
-                Find jobs by querying Greenhouse/Lever APIs or using connected accounts to crawl LinkedIn/Naukri.
-              </p>
+          {/* Right Column: Personal Profile Data & Stored Answer Bank */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+            <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              <div>
+                <h2 className="gradient-text" style={{ fontSize: '1.25rem', fontWeight: 700 }}>Candidate Profile (`profile.json`)</h2>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+                  Deterministic profile data used for notice period, CTC, locations, and experience questions.
+                </p>
+              </div>
+
+              <form onSubmit={handleSaveUserProfile} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+                  <div className="input-group" style={{ flex: 1, minWidth: '160px' }}>
+                    <span className="input-label">Full Name</span>
+                    <input 
+                      type="text" 
+                      value={userProfileData.name || ""} 
+                      onChange={(e) => setUserProfileData({ ...userProfileData, name: e.target.value })}
+                      className="input-field" 
+                    />
+                  </div>
+                  <div className="input-group" style={{ flex: 1, minWidth: '160px' }}>
+                    <span className="input-label">Email Address</span>
+                    <input 
+                      type="text" 
+                      value={userProfileData.email || ""} 
+                      onChange={(e) => setUserProfileData({ ...userProfileData, email: e.target.value })}
+                      className="input-field" 
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+                  <div className="input-group" style={{ flex: 1, minWidth: '140px' }}>
+                    <span className="input-label">Phone</span>
+                    <input 
+                      type="text" 
+                      value={userProfileData.phone || ""} 
+                      onChange={(e) => setUserProfileData({ ...userProfileData, phone: e.target.value })}
+                      className="input-field" 
+                    />
+                  </div>
+                  <div className="input-group" style={{ flex: 1, minWidth: '140px' }}>
+                    <span className="input-label">Total Experience (Years)</span>
+                    <input 
+                      type="number" 
+                      step="0.5"
+                      value={userProfileData.experience_years || 3.0} 
+                      onChange={(e) => setUserProfileData({ ...userProfileData, experience_years: Number(e.target.value) })}
+                      className="input-field" 
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+                  <div className="input-group" style={{ flex: 1, minWidth: '140px' }}>
+                    <span className="input-label">Current CTC</span>
+                    <input 
+                      type="text" 
+                      value={userProfileData.current_ctc || "₹5 LPA"} 
+                      onChange={(e) => setUserProfileData({ ...userProfileData, current_ctc: e.target.value })}
+                      className="input-field" 
+                    />
+                  </div>
+                  <div className="input-group" style={{ flex: 1, minWidth: '140px' }}>
+                    <span className="input-label">Expected CTC</span>
+                    <input 
+                      type="text" 
+                      value={userProfileData.expected_ctc || "₹8 LPA"} 
+                      onChange={(e) => setUserProfileData({ ...userProfileData, expected_ctc: e.target.value })}
+                      className="input-field" 
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+                  <div className="input-group" style={{ flex: 1, minWidth: '140px' }}>
+                    <span className="input-label">Notice Period</span>
+                    <input 
+                      type="text" 
+                      value={userProfileData.notice_period || "Immediate"} 
+                      onChange={(e) => setUserProfileData({ ...userProfileData, notice_period: e.target.value })}
+                      className="input-field" 
+                    />
+                  </div>
+                  <div className="input-group" style={{ flex: 1, minWidth: '140px' }}>
+                    <span className="input-label">Current Location</span>
+                    <input 
+                      type="text" 
+                      value={userProfileData.current_location || "Noida"} 
+                      onChange={(e) => setUserProfileData({ ...userProfileData, current_location: e.target.value })}
+                      className="input-field" 
+                    />
+                  </div>
+                </div>
+
+                <div className="input-group">
+                  <span className="input-label">Preferred Locations (Comma separated)</span>
+                  <input 
+                    type="text" 
+                    value={Array.isArray(userProfileData.preferred_locations) ? userProfileData.preferred_locations.join(", ") : (userProfileData.preferred_locations || "")} 
+                    onChange={(e) => setUserProfileData({ ...userProfileData, preferred_locations: e.target.value.split(",").map(s => s.trim()) })}
+                    className="input-field" 
+                  />
+                </div>
+
+                <button type="submit" className="btn btn-primary" style={{ marginTop: '0.5rem' }}>
+                  Save Candidate Profile Data
+                </button>
+              </form>
             </div>
 
-            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-              <div className="input-group" style={{ flex: 1.5, minWidth: '180px' }}>
-                <span className="input-label">Search Keyword / Company</span>
-                <input 
-                  type="text" 
-                  value={scrapingQuery}
-                  onChange={(e) => setScrapingQuery(e.target.value)}
-                  placeholder="e.g. Stripe, FastAPI Developer"
-                  className="input-field" 
-                />
+            {/* Answer Bank Box */}
+            <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              <div>
+                <h2 className="gradient-text" style={{ fontSize: '1.25rem', fontWeight: 700 }}>Answer Bank (`answers.json`)</h2>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+                  Zero-LLM instant lookup database for common recruiter interview questions.
+                </p>
               </div>
-              <div className="input-group" style={{ flex: 1, minWidth: '120px' }}>
-                <span className="input-label">Location (Optional)</span>
-                <input 
-                  type="text" 
-                  value={scrapingLocation}
-                  onChange={(e) => setScrapingLocation(e.target.value)}
-                  placeholder="e.g. Remote, Bengaluru"
-                  className="input-field" 
-                />
-              </div>
-              <div className="input-group" style={{ flex: 1, minWidth: '150px' }}>
-                <span className="input-label">Source Board</span>
-                <select 
-                  className="input-field" 
-                  value={scrapingPlatform} 
-                  onChange={(e) => setScrapingPlatform(e.target.value)}
-                  style={{ background: '#0f131a', color: 'var(--text-primary)' }}
-                >
-                  <option value="">Greenhouse / Lever API</option>
-                  <option value="linkedin">LinkedIn Crawler</option>
-                  <option value="naukri">Naukri Crawler</option>
-                </select>
-              </div>
-            </div>
 
-            <button className="btn btn-primary" onClick={handleScrapeJobs} disabled={isScraping} style={{ alignSelf: 'flex-start' }}>
-              <Search size={16} />
-              {isScraping ? 'Discovering Jobs...' : 'Trigger Crawler Scrape'}
-            </button>
-
-            {/* List of Crawled Jobs */}
-            <div style={{ marginTop: '1rem' }}>
-              <h3 style={{ fontSize: '0.95rem', color: 'var(--text-secondary)', marginBottom: '0.75rem' }}>
-                Indexed Database Opportunities ({jobs.length})
-              </h3>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxHeight: '480px', overflowY: 'auto', paddingRight: '0.25rem' }}>
-                {jobs.map(job => (
-                  <div key={job.id} className="glass-card" style={{ padding: '1rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                      <div>
-                        <h4 style={{ fontSize: '0.95rem', fontWeight: 700 }}>{job.title}</h4>
-                        <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{job.company} • {job.location}</p>
-                      </div>
-                      <a href={job.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.75rem', color: 'var(--secondary)', textDecoration: 'none' }}>
-                        View Post
-                      </a>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                {Object.entries(answerBankData).map(([key, val]) => (
+                  <div key={key} className="glass-card" style={{ padding: '0.85rem 1rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <strong style={{ fontSize: '0.8rem', color: 'var(--primary)', textTransform: 'capitalize' }}>
+                        Question Key: `{key}`
+                      </strong>
+                      <button 
+                        className="btn btn-secondary" 
+                        style={{ padding: '0.2rem 0.5rem', fontSize: '0.7rem' }}
+                        onClick={() => handleSaveAnswerEntry(key, val)}
+                      >
+                        Save Entry
+                      </button>
                     </div>
-                    <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.5rem', lineBreak: 'anywhere' }}>
-                      {job.description.length > 200 ? `${job.description.substring(0, 200)}...` : job.description}
-                    </p>
-                    <div className="tag-container" style={{ marginTop: '0.75rem' }}>
-                      {(job.skills_required || []).map((s, idx) => (
-                        <span key={idx} className="tag">{s}</span>
-                      ))}
-                    </div>
+                    <textarea 
+                      rows={2} 
+                      value={val || ""} 
+                      onChange={(e) => setAnswerBankData({ ...answerBankData, [key]: e.target.value })}
+                      className="input-field" 
+                      style={{ fontSize: '0.8rem', fontFamily: 'sans-serif' }}
+                    />
                   </div>
                 ))}
               </div>
@@ -788,46 +947,261 @@ function App() {
         </div>
       )}
 
-      {/* Tab 2: Match Rankings */}
-      {activeTab === "matching" && (
-        <div className="glass-panel">
-          <h2 className="gradient-text" style={{ fontSize: '1.5rem', fontWeight: 800, marginBottom: '0.5rem' }}>
-            Hybrid Semantic & Keyword Match Rankings
-          </h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '1.5rem' }}>
-            Calculated via Qdrant dense vector cosine distance + lexical skill tags intersections, refined by BGE-Reranker-Large.
-          </p>
+      {/* Tab 2: Job Discovery Crawler & Match Trigger */}
+      {activeTab === "crawler" && (
+        <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+          <div>
+            <h2 className="gradient-text" style={{ fontSize: '1.25rem', fontWeight: 700 }}>Job Discovery Crawler & Vector Matching</h2>
+            <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+              Find jobs by querying Greenhouse/Lever APIs or using connected accounts to crawl LinkedIn/Naukri, then compute vector similarity rankings.
+            </p>
+          </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            {matches.map((m, idx) => (
-              <div key={idx} className="glass-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1.25rem' }}>
-                <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'center' }}>
-                  <div className="score-badge">
-                    {m.match_percentage}%
-                    <span style={{ display: 'block', fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 500 }}>score</span>
-                  </div>
-                  <div>
-                    <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>{m.title}</h3>
-                    <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{m.company} • {m.location}</p>
-                    <div style={{ marginTop: '0.5rem' }}>
-                      <span className={`status-badge status-${m.status}`}>
-                        {m.status}
-                      </span>
+          <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+            <div className="input-group" style={{ flex: 1.5, minWidth: '180px' }}>
+              <span className="input-label">Search Keyword / Company</span>
+              <input 
+                type="text" 
+                value={scrapingQuery}
+                onChange={(e) => setScrapingQuery(e.target.value)}
+                placeholder="e.g. Stripe, FastAPI Developer"
+                className="input-field" 
+              />
+            </div>
+            <div className="input-group" style={{ flex: 1, minWidth: '120px' }}>
+              <span className="input-label">Location (Optional)</span>
+              <input 
+                type="text" 
+                value={scrapingLocation}
+                onChange={(e) => setScrapingLocation(e.target.value)}
+                placeholder="e.g. Remote, Bengaluru"
+                className="input-field" 
+              />
+            </div>
+            <div className="input-group" style={{ flex: 1, minWidth: '150px' }}>
+              <span className="input-label">Source Board</span>
+              <select 
+                className="input-field" 
+                value={scrapingPlatform} 
+                onChange={(e) => setScrapingPlatform(e.target.value)}
+                style={{ background: '#0f131a', color: 'var(--text-primary)' }}
+              >
+                <option value="">Greenhouse / Lever API</option>
+                <option value="linkedin">LinkedIn Crawler</option>
+                <option value="naukri">Naukri Crawler</option>
+              </select>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+            <button className="btn btn-primary" onClick={handleScrapeJobs} disabled={isScraping}>
+              <Search size={16} />
+              {isScraping ? 'Discovering Jobs...' : 'Trigger Crawler Scrape'}
+            </button>
+          </div>
+
+          {/* Compute Vector Similarity Match CTA Section */}
+          <div className="glass-card" style={{ padding: '1.25rem', background: 'rgba(99, 102, 241, 0.08)', border: '1px solid var(--primary-glow)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', marginTop: '0.5rem' }}>
+            <div>
+              <h3 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Sparkles size={18} color="#818cf8" />
+                Compute Vector Similarity Match Rankings
+              </h3>
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+                Active Resume: <strong style={{ color: 'var(--primary)' }}>{activeResume ? activeResume.filename : "No CV Selected"}</strong>
+                {activeResume && ` (${activeResume.parsed_experience} yrs experience, ${(activeResume.parsed_skills || []).length} skills)`}
+              </p>
+            </div>
+            <button 
+              className="btn btn-primary" 
+              onClick={handleMatchResume} 
+              disabled={isMatching || !activeResumeId}
+              style={{ padding: '0.75rem 1.5rem' }}
+            >
+              {isMatching ? 'Computing Hybrid Vector Rankings...' : '⚡ Compute Match Rankings'}
+              <ArrowRight size={16} />
+            </button>
+          </div>
+
+          {/* List of Crawled Jobs */}
+          <div style={{ marginTop: '1rem' }}>
+            <h3 style={{ fontSize: '0.95rem', color: 'var(--text-secondary)', marginBottom: '0.75rem' }}>
+              Indexed Database Opportunities ({jobs.length})
+            </h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxHeight: '480px', overflowY: 'auto', paddingRight: '0.25rem' }}>
+              {jobs.map(job => (
+                <div key={job.id} className="glass-card" style={{ padding: '1rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <div>
+                      <h4 style={{ fontSize: '0.95rem', fontWeight: 700 }}>{job.title}</h4>
+                      <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{job.company} • {job.location}</p>
                     </div>
+                    <a href={job.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.75rem', color: 'var(--secondary)', textDecoration: 'none' }}>
+                      View Post
+                    </a>
+                  </div>
+                  <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.5rem', lineBreak: 'anywhere' }}>
+                    {job.description.length > 200 ? `${job.description.substring(0, 200)}...` : job.description}
+                  </p>
+                  <div className="tag-container" style={{ marginTop: '0.75rem', alignItems: 'center' }}>
+                    <span className="tag" style={{ background: '#312e81', border: '1px solid #6366f1', color: '#a5b4fc', fontSize: '0.7rem' }}>
+                      Apply Type: {getJobApplyType(job.url)}
+                    </span>
+                    {(job.skills_required || []).map((s, idx) => (
+                      <span key={idx} className="tag">{s}</span>
+                    ))}
                   </div>
                 </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
-                <button className="btn btn-primary" onClick={() => handleSelectApplication(m.application_id)}>
-                  Review & Tailor CV
-                  <ArrowRight size={16} />
-                </button>
+      {/* Tab 2: Match Rankings */}
+      {activeTab === "matching" && (
+        <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+          <div>
+            <h2 className="gradient-text" style={{ fontSize: '1.5rem', fontWeight: 800, marginBottom: '0.25rem' }}>
+              Agentic RAG Semantic & Hybrid Match Engine
+            </h2>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+              Multi-stage pipeline: HyDE Query Expansion → Hybrid Vector + Lexical Search → CRAG Adaptive Retries → BGE Cross-Encoder Reranker → MMR Deduplication.
+            </p>
+          </div>
+
+          {/* RAG Telemetry & Observability Drawer */}
+          {pipelineMeta && (
+            <div className="glass-card" style={{ padding: '1rem', background: 'rgba(99, 102, 241, 0.05)', borderLeft: '4px solid var(--primary)', display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
+              <div>
+                <strong style={{ fontSize: '0.8rem', color: 'var(--text-primary)', display: 'block', marginBottom: '0.25rem' }}>RAG Pipeline Analytics & Diagnostics</strong>
+                <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                  <span>🎯 Intent: <strong>{pipelineMeta.intent}</strong></span>
+                  <span>📄 HyDE: <strong>{pipelineMeta.hyde_generated ? 'Active' : 'N/A'}</strong></span>
+                  <span>🔄 Retries: <strong>{pipelineMeta.retrieval_attempts}</strong></span>
+                  <span>⚡ Confidence: <strong>{pipelineMeta.confidence_score}%</strong></span>
+                </div>
+              </div>
+              {pipelineMeta.rag_metrics && (
+                <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                  <span>📊 Precision@K: <strong>{pipelineMeta.rag_metrics.precision_at_k}%</strong></span>
+                  <span>⏱️ Latency: <strong>{pipelineMeta.rag_metrics.retrieval_latency_ms}ms</strong></span>
+                  <span>🛡️ Groundedness: <strong>{pipelineMeta.rag_metrics.groundedness_score}%</strong></span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Match Score Threshold Filter Slider */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', background: 'rgba(15, 23, 42, 0.4)', padding: '0.75rem 1rem', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+            <label style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: 600, minWidth: '210px' }}>
+              🎯 Match Threshold Filter: <strong style={{ color: 'var(--primary)' }}>{matchThreshold}%</strong>
+            </label>
+            <input 
+              type="range" 
+              min="0" 
+              max="90" 
+              step="5" 
+              value={matchThreshold} 
+              onChange={(e) => setMatchThreshold(Number(e.target.value))}
+              style={{ accentColor: 'var(--primary)', cursor: 'pointer', flex: 1 }}
+            />
+            <button className="btn btn-secondary" style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem' }} onClick={handleMatchResume}>
+              Apply Filter
+            </button>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+            {matches.map((m, idx) => (
+              <div key={idx} className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', padding: '1.25rem', borderLeft: '4px solid var(--primary)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div style={{ display: 'flex', gap: '1.25rem', alignItems: 'center' }}>
+                    <div className="score-badge" style={{ minWidth: '60px', height: '60px' }}>
+                      {m.match_percentage}%
+                      <span style={{ display: 'block', fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 500 }}>match</span>
+                    </div>
+                    <div>
+                      <h3 style={{ fontSize: '1.15rem', fontWeight: 700 }}>{m.title}</h3>
+                      <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                        <strong>{m.company}</strong> • {m.location} {m.created_at ? `• Posted: ${m.created_at}` : ''}
+                      </p>
+                      <div style={{ marginTop: '0.35rem', display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                        <span className={`status-badge status-${m.status}`}>
+                          {m.status}
+                        </span>
+                        <span className="tag" style={{ background: '#312e81', border: '1px solid #6366f1', color: '#a5b4fc', fontSize: '0.68rem', padding: '0.15rem 0.5rem' }}>
+                          Apply Type: {m.application_type || getJobApplyType(m.url)}
+                        </span>
+                        {m.url && (
+                          <a 
+                            href={m.url} 
+                            target="_blank" 
+                            rel="noopener noreferrer" 
+                            style={{ fontSize: '0.75rem', color: 'var(--secondary)', textDecoration: 'none', marginLeft: '0.4rem', display: 'inline-flex', alignItems: 'center', gap: '0.2rem' }}
+                          >
+                            View Job Post ↗
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <button className="btn btn-primary" onClick={() => handleSelectApplication(m.application_id)}>
+                    Review & Tailor CV
+                    <ArrowRight size={16} />
+                  </button>
+                </div>
+
+                {/* Granular Sub-Scores */}
+                {m.sub_scores && (
+                  <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', background: 'rgba(15, 23, 42, 0.5)', padding: '0.6rem 0.85rem', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                    <span style={{ fontSize: '0.75rem', color: '#cbd5e1' }}>
+                      🛠️ Skill Match: <strong style={{ color: 'var(--secondary)' }}>{m.sub_scores.skill_match_pct}%</strong>
+                    </span>
+                    <span style={{ fontSize: '0.75rem', color: '#cbd5e1' }}>
+                      💼 Experience Match: <strong style={{ color: 'var(--success)' }}>{m.sub_scores.experience_match_pct}%</strong>
+                    </span>
+                    <span style={{ fontSize: '0.75rem', color: '#cbd5e1' }}>
+                      🧠 Semantic Similarity: <strong style={{ color: '#a5b4fc' }}>{m.sub_scores.semantic_similarity_pct}%</strong>
+                    </span>
+                  </div>
+                )}
+
+                {/* Missing Skills Tag List */}
+                {m.missing_skills && m.missing_skills.length > 0 && (
+                  <div>
+                    <strong style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Missing Skill Gaps Flagged:</strong>
+                    <div className="tag-container" style={{ marginTop: '0.25rem' }}>
+                      {m.missing_skills.map((sk, skIdx) => (
+                        <span key={skIdx} className="tag" style={{ color: '#f87171', background: 'rgba(239, 68, 68, 0.08)', borderColor: 'rgba(239, 68, 68, 0.25)' }}>
+                          {sk}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Grounded Selection Explanations */}
+                {m.why_selected && m.why_selected.length > 0 && (
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                    <strong style={{ color: 'var(--text-primary)', display: 'block', marginBottom: '0.25rem' }}>Why this job was selected:</strong>
+                    <ul style={{ paddingLeft: '1.25rem', margin: 0 }}>
+                      {m.why_selected.map((reason, rIdx) => (
+                        <li key={rIdx} style={{ marginBottom: '0.2rem' }}>{reason}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
             ))}
 
             {matches.length === 0 && (
               <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
                 <AlertCircle size={48} style={{ margin: '0 auto 1rem', display: 'block' }} />
-                <p>No matches generated yet. Make sure your active resume and crawler databases are populated.</p>
+                <p>No job matches found meeting your <strong>{matchThreshold}%</strong> threshold filter requirement.</p>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
+                  Try lowering the Match Threshold slider above and clicking <strong>Apply Filter</strong>.
+                </p>
               </div>
             )}
           </div>
@@ -847,6 +1221,9 @@ function App() {
                 </span>
                 <span className="tag" style={{ background: '#1e293b', border: 'none', color: '#cbd5e1' }}>
                   ATS: {appDetail.ats_type}
+                </span>
+                <span className="tag" style={{ background: '#312e81', border: '1px solid #6366f1', color: '#a5b4fc' }}>
+                  Type: {appDetail.application_type || "Unknown"}
                 </span>
               </div>
               <h2 style={{ fontSize: '1.5rem', fontWeight: 800 }}>{appDetail.job_title}</h2>
@@ -998,7 +1375,7 @@ function App() {
                   />
                 </div>
               </div>
-              <div className="input-group" style={{ flex: 2, minWidth: '250px' }}>
+              <div className="input-group" style={{ flex: 1.5, minWidth: '200px' }}>
                 <span className="input-label">Email Address</span>
                 <div style={{ position: 'relative' }}>
                   <Mail size={16} style={{ position: 'absolute', left: '10px', top: '12px', color: 'var(--text-muted)' }} />
@@ -1006,6 +1383,19 @@ function App() {
                     type="text" 
                     value={applicantInfo.email}
                     onChange={(e) => setApplicantInfo({ ...applicantInfo, email: e.target.value })}
+                    className="input-field" 
+                    style={{ paddingLeft: '2.25rem' }}
+                  />
+                </div>
+              </div>
+              <div className="input-group" style={{ flex: 1.5, minWidth: '200px' }}>
+                <span className="input-label">Phone Number</span>
+                <div style={{ position: 'relative' }}>
+                  <User size={16} style={{ position: 'absolute', left: '10px', top: '12px', color: 'var(--text-muted)' }} />
+                  <input 
+                    type="text" 
+                    value={applicantInfo.phone}
+                    onChange={(e) => setApplicantInfo({ ...applicantInfo, phone: e.target.value })}
                     className="input-field" 
                     style={{ paddingLeft: '2.25rem' }}
                   />

@@ -2,7 +2,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from backend.app.database import get_db
+from backend.app.database import get_db, SessionLocal
 from backend.app import models
 from backend.app.services.tailor import tailor_resume_for_job, generate_cover_letter, save_tailored_resume
 from backend.app.services.critic import evaluate_resume_with_critic
@@ -16,6 +16,7 @@ class ApplyRequest(BaseModel):
     first_name: str
     last_name: str
     email: str
+    phone: str = ""
     headful: bool = True
 
 @router.get("")
@@ -35,6 +36,7 @@ def list_applications(db: Session = Depends(get_db)):
             "match_score": app.match_score,
             "ats_score": app.ats_score,
             "ats_type": app.ats_type,
+            "application_type": app.application_type or "Unknown",
             "tailored_resume_path": app.tailored_resume_path,
             "cover_letter": app.cover_letter,
             "applied_at": app.applied_at
@@ -69,12 +71,38 @@ def get_application(app_id: int, db: Session = Depends(get_db)):
         "ats_score": app.ats_score,
         "ats_critic_feedback": app.ats_critic_feedback,
         "ats_type": app.ats_type,
+        "application_type": app.application_type or "Unknown",
         "tailored_resume_path": app.tailored_resume_path,
         "tailored_content": tailored_content,
         "cover_letter": app.cover_letter,
         "applied_at": app.applied_at,
         "logs": app.logs
     }
+
+@router.post("/{app_id}/classify")
+def classify_application_endpoint(app_id: int, db: Session = Depends(get_db)):
+    """Classifies the application type for a specific job application."""
+    app = db.query(models.Application).filter(models.Application.id == app_id).first()
+    if not app or not app.job:
+        raise HTTPException(status_code=404, detail="Application or linked job not found")
+        
+    url = app.job.url
+    ats_domains = [
+        "greenhouse.io", "lever.co", "myworkdayjobs.com", "ashbyhq.com",
+        "icims.com", "smartrecruiters.com", "oraclecloud.com", "taleo.net",
+        "bamboohr.com", "jobvite.com", "jazzhr.com"
+    ]
+    url_lower = url.lower()
+    app_type = "Unknown"
+    if any(domain in url_lower for domain in ats_domains):
+        app_type = "External Website"
+    elif "linkedin.com" in url_lower or "naukri.com" in url_lower:
+        app_type = "Easy Apply"
+        
+    app.application_type = app_type
+    db.commit()
+    db.refresh(app)
+    return {"id": app.id, "application_type": app.application_type}
 
 @router.post("/{app_id}/tailor")
 def tailor_application(app_id: int, db: Session = Depends(get_db)):
@@ -191,61 +219,87 @@ def approve_application(app_id: int, db: Session = Depends(get_db)):
 async def run_apply_automation(
     app_id: int,
     req_data: ApplyRequest,
-    db_session: Session
 ):
-    """Background task to execute Playwright apply sequence and write logs."""
-    app = db_session.query(models.Application).filter(models.Application.id == app_id).first()
-    if not app:
-        return
-        
-    app.logs = "Application submission starting...\n"
-    db_session.commit()
+    """
+    Background task to execute Playwright apply sequence and write logs.
     
-    resume_file = app.tailored_resume_path if app.tailored_resume_path else ""
-    if not resume_file:
-        import os
-        import uuid
-        from backend.app.config import settings
-        temp_name = f"resume_original_{uuid.uuid4()}.txt"
-        temp_path = os.path.join(settings.RESUMES_PATH, temp_name)
-        with open(temp_path, "w", encoding="utf-8") as f:
-            f.write(app.resume.raw_text)
-        resume_file = temp_path
-    # Detect platform from job URL to retrieve cookies
-    cookies = None
-    job_url_lower = app.job.url.lower() if app.job else ""
-    platform = None
-    if "naukri.com" in job_url_lower:
-        platform = "naukri"
-    elif "linkedin.com" in job_url_lower:
-        platform = "linkedin"
+    IMPORTANT: Creates its own DB session since background tasks must NOT
+    use the request-scoped session (which closes when the request ends).
+    """
+    db_session = SessionLocal()
+    try:
+        app = db_session.query(models.Application).filter(models.Application.id == app_id).first()
+        if not app:
+            return
+            
+        app.logs = "Application submission starting...\n"
+        db_session.commit()
         
-    if platform:
-        cred = db_session.query(models.UserCredential).filter(models.UserCredential.platform == platform).first()
-        if cred and cred.session_cookies:
-            cookies = cred.session_cookies
+        resume_file = app.tailored_resume_path if app.tailored_resume_path else ""
+        if not resume_file:
+            import os
+            import uuid
+            from backend.app.config import settings
+            temp_name = f"resume_original_{uuid.uuid4()}.txt"
+            temp_path = os.path.join(settings.RESUMES_PATH, temp_name)
+            with open(temp_path, "w", encoding="utf-8") as f:
+                f.write(app.resume.raw_text)
+            resume_file = temp_path
+            
+        # Detect platform from job URL to retrieve cookies and use correct browser profile
+        cookies = None
+        job_url_lower = app.job.url.lower() if app.job else ""
+        platform = None
+        if "naukri.com" in job_url_lower:
+            platform = "naukri"
+        elif "linkedin.com" in job_url_lower:
+            platform = "linkedin"
+            
+        if platform:
+            cred = db_session.query(models.UserCredential).filter(models.UserCredential.platform == platform).first()
+            if cred and cred.session_cookies:
+                cookies = cred.session_cookies
 
-    import asyncio
-    result = await asyncio.to_thread(
-        automate_application_flow,
-        apply_url=app.job.url,
-        first_name=req_data.first_name,
-        last_name=req_data.last_name,
-        email=req_data.email,
-        resume_path=resume_file,
-        cover_letter=app.cover_letter or "",
-        headful=req_data.headful,
-        cookies=cookies
-    )
-    
-    if result["success"]:
-        app.status = "applied"
-        app.applied_at = datetime.utcnow()
-    else:
-        app.status = "failed"
+        import asyncio
+        result = await asyncio.to_thread(
+            automate_application_flow,
+            apply_url=app.job.url,
+            first_name=req_data.first_name,
+            last_name=req_data.last_name,
+            email=req_data.email,
+            phone=req_data.phone,
+            resume_path=resume_file,
+            cover_letter=app.cover_letter or "",
+            headful=req_data.headful,
+            cookies=cookies,
+            platform=platform,
+        )
         
-    app.logs = result.get("logs", "") + (f"\nError: {result['error']}" if "error" in result else "\nCompleted successfully.")
-    db_session.commit()
+        # Reload app in case it was modified during the async operation
+        app = db_session.query(models.Application).filter(models.Application.id == app_id).first()
+        if not app:
+            return
+        
+        if result["success"]:
+            app.status = "applied"
+            app.applied_at = datetime.utcnow()
+        else:
+            app.status = "failed"
+            
+        app.logs = result.get("logs", "") + (f"\nError: {result['error']}" if "error" in result else "\nCompleted successfully.")
+        db_session.commit()
+    except Exception as e:
+        logger.error(f"Background apply task failed for app {app_id}: {e}")
+        try:
+            app = db_session.query(models.Application).filter(models.Application.id == app_id).first()
+            if app:
+                app.status = "failed"
+                app.logs = (app.logs or "") + f"\nFatal error: {str(e)}"
+                db_session.commit()
+        except Exception:
+            pass
+    finally:
+        db_session.close()
 
 @router.post("/{app_id}/apply")
 def apply_application(
@@ -258,12 +312,12 @@ def apply_application(
     app = db.query(models.Application).filter(models.Application.id == app_id).first()
     if not app:
         raise HTTPException(status_code=404, detail="Application not found")
-        
+    
+    # Launch background task with its OWN db session (not request-scoped)
     background_tasks.add_task(
         run_apply_automation,
         app_id=app_id,
         req_data=req_data,
-        db_session=db
     )
     
     app.status = "applying"
