@@ -1,29 +1,38 @@
 # Automated Job Agent 🤖🚀
 
-> An autonomous, open-source AI agent system designed for automated job discovery, intelligent resume matching, background scheduling, and automated application filling across job boards (LinkedIn, Naukri, Greenhouse, Lever, Workday, etc.).
+> An enterprise-grade, open-source AI agent system designed for automated job discovery, agentic RAG matching, background scheduling, multi-agent state graph orchestration, and automated application filling across job boards (LinkedIn, Naukri, Greenhouse, Lever, Workday, Ashby, SmartRecruiters, etc.).
 
 ---
 
 ## 🌟 Key Features
 
-- 🧠 **Multi-LLM Task Router**:
-  - Automatically routes tasks based on complexity across **Google Gemini (`3.5 Flash`, `3.1 Flash-Lite`)**, **xAI Grok**, **OpenAI (`gpt-4o`)**, **Hugging Face**, and **Local Ollama**.
-  - Includes cost tracking and automatic fallback chains.
+- ⚡ **10/10 Enterprise Hybrid Match Cache Engine**:
+  - **Tiered Hot/Cold Caching**: Redis Hot Cache (< 1ms) with SQLite/PostgreSQL Cold Cache (< 5ms) fallback.
+  - **Circuit Breaker PING Monitor**: Instant zero-delay fallback to DB cold cache if Redis is offline or unreachable.
+  - **Decoupled Resume Hashing**: `resume_embedding_hash` (skills + experience + raw text) is decoupled from metadata (CTC/Location). Updating CTC/location reuses precomputed embeddings without calling LLMs!
+  - **Distributed `SETNX` Locks**: 30s auto-expiry locks prevent thundering-herd RAG calls across worker processes.
+  - **Separate Vector & Reranker Caches**: Caches precomputed vectors (`emb:resume:{hash}`, `emb:job:{hash}`) and Cross-Encoder probabilities (`rerank:{resume_emb_hash}:{job_hash}`).
+  - **Financial Savings Telemetry**: Real-time tracking of hit rates, LLM calls saved, and dollar savings.
+
+- 📊 **Dual Observability & Tracing (Langfuse + LangSmith)**:
+  - Full trace observability across LangGraph state machines and LangChain RAG pipelines.
+  - Integrated with **Langfuse US Cloud** (`https://us.cloud.langfuse.com`) and **LangSmith** (`LANGSMITH_PROJECT="Automated-Job-Agent"`).
+
+- 🌐 **Multi-Board Public ATS Scraper & Job Discovery**:
+  - **Public ATS Engine**: Discovers job listings across 17+ top tech company boards (`Stripe`, `Figma`, `Airbnb`, `Reddit`, `Lyft`, `GitHub`, `Cloudflare`, `Coinbase`, `Datadog`, `Instacart`, `Scale AI`, `Cohere`, `Discord`, `Canva`, `Roblox`, `Robinhood`) for keyword role discovery (`GenAI`, `Python`, `Full Stack`).
+  - **Portal Auto-Detection**: Distinguishes between authenticated portals (`Naukri`, `LinkedIn`, `Wellfound`, `Workday`) requiring stored credentials and public ATS forms (`Greenhouse`, `Lever`, `Ashby`, `SmartRecruiters`, `Indeed`, `Glassdoor`) that submit directly without login.
+
+- 🤖 **LangGraph Multi-Agent State Graph Orchestrator**:
+  - State machine routing across `PlannerAgent`, `RetrieverAgent`, `MatcherAgent`, `TailorAgent`, `ApplicationAgent`, and `ReflectionAgent`.
 
 - ⏰ **Persistent Scheduler & Task Queue**:
   - SQLite-backed queue with priority levels, payload hash deduplication, and exponential backoff retries.
   - Recurring cron schedules (e.g. run job discovery every weekday at 9 AM & 6 PM) that **persist across server reloads and system restarts**.
   - Built-in **Token-Bucket Rate Limiter** to prevent platform bans (LinkedIn: 25/day, Naukri: 50/day).
 
-- ⚡ **Agentic RAG Job Matching**:
-  - Multi-stage retrieval: HyDE query expansion → Qdrant Vector Store hybrid search → BGE Cross-Encoder reranking.
-
 - 🌐 **Browser Session Pool & Stealth Automation**:
   - Pre-warmed Playwright browser context pool with active session cookie persistence.
   - Advanced anti-detection stealth measures (hides `navigator.webdriver`, rotates user-agents and viewports).
-
-- 👁️ **Vision-Based Page Navigator**:
-  - Iterative screenshot → LLM Vision → Action loop for unknown external application forms when traditional DOM selectors fail.
 
 - 💻 **Modern Web Interface**:
   - React 19 + Vite dashboard for managing candidate profile data, uploading resumes, viewing job matches, and monitoring application status.
@@ -42,17 +51,16 @@
                                            │
           ┌────────────────────────────────┼────────────────────────────────┐
           ▼                                ▼                                ▼
-[ Multi-LLM Task Router ]     [ Scheduler & Queue System ]        [ Browser Session Pool ]
- ├─ Gemini 3.5 Flash           ├─ APScheduler Cron Engine         ├─ Warm Playwright Contexts
- ├─ Gemini 3.1 Flash-Lite      ├─ SQLite Task Queue (Persisted)   ├─ Anti-Detection Stealth JS
- ├─ Grok 3 / Grok Mini         ├─ Per-Platform Rate Limiter       └─ Vision Navigator Loop
- ├─ OpenAI GPT-4o              └─ Staggered Batch Execution
- └─ Ollama / HF Free
+[ LangGraph Multi-Agent ]     [ Enterprise Cache Engine ]         [ Observability Tracing ]
+ ├─ StateGraph Pipeline        ├─ Redis Hot Cache (< 1ms)          ├─ Langfuse US Cloud
+ ├─ Planner & Matcher Agents   ├─ DB Cold Cache (< 5ms)           ├─ LangSmith Project Tracing
+ ├─ Application Agent          ├─ Circuit Breaker Monitor          └─ Real-Time Cost Telemetry
+ └─ Reflection Loop            └─ SETNX Stampede Locks
           │                                │                                │
           └────────────────────────────────┼────────────────────────────────┘
                                            ▼
                             [ Storage & Vector Layer ]
-                              ├─ SQLite (job_agent.db)
+                              ├─ SQLite (job_agent.db) / PostgreSQL
                               ├─ Qdrant Vector Store (qdrant_db/)
                               └─ Encrypted Session Cookies & Profiles
 ```
@@ -72,7 +80,7 @@
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-username/Automated-Job-Agent.git
+   git clone https://github.com/sumit0593/Automated-Job-Agent.git
    cd Automated-Job-Agent
    ```
 
@@ -95,7 +103,7 @@
    ```bash
    cp .env.example .env
    ```
-   *(Edit `.env` to add your optional API keys for Gemini, Grok, OpenAI, or Hugging Face)*.
+   *(Edit `.env` to add your optional API keys for Gemini, Langfuse, LangSmith, Grok, OpenAI, or Hugging Face)*.
 
 ---
 
@@ -142,19 +150,18 @@ pm2 logs
 
 ---
 
-## 📡 API Reference & Scheduler Commands
-
-The API provides endpoints for scheduler management, task queuing, and LLM router status:
+## 📡 API Reference & Endpoints
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
+| `GET` | `/api/health` | System health check and database status |
 | `GET` | `/api/llm/status` | View router strategy, active providers, and real-time cost tracking |
+| `GET` | `/api/matching/match` | Agentic RAG candidate-to-job matching & vector rankings |
+| `POST` | `/api/jobs/scrape` | Trigger multi-board public ATS & portal job discovery |
 | `GET` | `/api/schedule/status` | View scheduler status, queue stats, and active rate limits |
 | `GET` | `/api/schedule/schedules` | List all active recurring schedules |
 | `POST` | `/api/schedule/discovery` | Add recurring job discovery scan |
-| `POST` | `/api/schedule/tasks/enqueue` | Manually enqueue a high-priority task |
-| `POST` | `/api/schedule/stop` | Stop background scheduler engine |
-| `POST` | `/api/schedule/start` | Restart background scheduler engine |
+| `POST` | `/api/schedule/batch-apply` | Queue staggered auto-application task batch |
 
 ---
 
