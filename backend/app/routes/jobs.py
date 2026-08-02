@@ -137,6 +137,8 @@ def clear_database(db: Session = Depends(get_db)):
 
         # Delete database records
         db.query(models.Application).delete()
+        db.query(models.MatchResultCache).delete()
+        db.query(models.ScheduledTask).delete()
         db.query(models.Job).delete()
         db.query(models.Resume).delete()
         db.commit()
