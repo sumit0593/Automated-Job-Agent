@@ -36,20 +36,34 @@ EXPANDED_SKILLS_DICTIONARY = [
 
 def extract_text_from_pdf(pdf_path: str) -> str:
     """
-    Extracts structured markdown/text from PDF files using Docling if available,
-    falling back to pdfplumber with hyperlink annotation extraction.
+    Extracts structured markdown/text from PDF files using Docling (HuggingFace models)
+    if available, falling back to pdfplumber with hyperlink annotation extraction.
     """
-    # 1. Try Docling DocumentConverter first if installed
+    # 1. Try Docling DocumentConverter first with explicit pipeline options
     try:
-        from docling.document_converter import DocumentConverter
-        logger.info(f"Extracting PDF text using Docling DocumentConverter: {pdf_path}")
-        converter = DocumentConverter()
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+        from docling.datamodel.pipeline_options import PdfPipelineOptions
+        
+        logger.info(f"Extracting PDF text using Docling (HuggingFace): {pdf_path}")
+        
+        # Configure pipeline options for clean Markdown conversion
+        pipeline_options = PdfPipelineOptions()
+        pipeline_options.do_ocr = False  # Text-based PDF extraction (fast & accurate)
+        pipeline_options.do_table_structure = True
+        
+        converter = DocumentConverter(
+            format_options={
+                "pdf": PdfFormatOption(pipeline_options=pipeline_options)
+            }
+        )
+        
         result = converter.convert(pdf_path)
         markdown_text = result.document.export_to_markdown()
         if markdown_text and len(markdown_text.strip()) > 50:
+            logger.info(f"Docling successfully converted PDF to Markdown ({len(markdown_text)} chars).")
             return markdown_text.strip()
     except Exception as e:
-        logger.info(f"Docling unavailable or fallback required ({e}). Using pdfplumber parser.")
+        logger.warning(f"Docling parser fallback ({e}). Using pdfplumber parser.")
 
     # 2. Fallback to pdfplumber with hyperlink annotation extraction
     text = ""
@@ -124,7 +138,7 @@ def calculate_years_from_date_ranges(text: str) -> float:
 
 def parse_resume_text_fallback(text: str) -> Dict[str, Any]:
     """
-    Comprehensive fallback parser extracting all skills, experience, and location using regex.
+    Comprehensive fallback parser extracting skills, experience, location, name, email, and phone using regex.
     """
     text_lower = text.lower()
     
@@ -135,7 +149,6 @@ def parse_resume_text_fallback(text: str) -> Dict[str, Any]:
     extracted_skills = []
     for skill in EXPANDED_SKILLS_DICTIONARY:
         s_lower = skill.lower()
-        # Use boundary check or explicit escape
         pattern = r"(?i)\b" + re.escape(s_lower) + r"\b"
         if re.search(pattern, text):
             extracted_skills.append(skill)
@@ -152,7 +165,36 @@ def parse_resume_text_fallback(text: str) -> Dict[str, Any]:
             location = city.capitalize()
             break
 
+    # 4. Email extraction
+    email = None
+    email_match = re.search(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", text)
+    if email_match:
+        email = email_match.group(0).strip()
+
+    # 5. Phone & Country Code extraction
+    phone = None
+    country_code = "+91"
+    phone_match = re.search(r"\b(?:\+?91[\s-]?)?([6-9]\d{9})\b", text)
+    if phone_match:
+        phone = phone_match.group(1).strip()
+    else:
+        general_phone = re.search(r"\b\d{10}\b", text)
+        if general_phone:
+            phone = general_phone.group(0).strip()
+
+    # 6. Name extraction fallback (usually first non-empty line)
+    name = None
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if lines:
+        first_line = lines[0]
+        if len(first_line.split()) <= 4 and not any(c in first_line for c in ["@", "http", ":", "/"]):
+            name = first_line
+
     return {
+        "name": name,
+        "email": email,
+        "phone": phone,
+        "country_code": country_code,
         "skills": list(dict.fromkeys(extracted_skills)),
         "experience": experience,
         "location": location
@@ -161,15 +203,20 @@ def parse_resume_text_fallback(text: str) -> Dict[str, Any]:
 def parse_resume_text_with_llm(raw_text: str) -> Dict[str, Any]:
     """
     Parses resume text using LLM and combines with comprehensive fallback parser.
+    Extracts name, email, phone, country_code, skills, experience, and location.
     """
     system_prompt = (
         "You are an expert ATS (Applicant Tracking System) parser. "
         "Analyze the provided resume text and extract key metadata in strict JSON format. "
         "Do not write introductory text, only return valid JSON.\n"
         "The JSON object must have:\n"
-        "1. 'skills': A comprehensive list of all technical skills, frameworks, AI models, tools, and databases mentioned.\n"
-        "2. 'experience': A float representing total years of professional experience (e.g. 3.0 or 3.5). Calculate from date ranges or explicit statements.\n"
-        "3. 'location': String representing city/region (e.g. 'Noida', 'Bangalore', 'Remote').\n"
+        "1. 'name': Full candidate name (or null if not found).\n"
+        "2. 'email': Candidate email address (or null if not found).\n"
+        "3. 'phone': Candidate 10-digit phone number without country code (or null if not found).\n"
+        "4. 'country_code': Country dialing code e.g. '+91' (default '+91').\n"
+        "5. 'skills': A comprehensive list of all technical skills, frameworks, AI models, tools, and databases mentioned.\n"
+        "6. 'experience': A float representing total years of professional experience (e.g. 3.0 or 3.5).\n"
+        "7. 'location': String representing city/region (e.g. 'Noida', 'Bangalore', 'Remote').\n"
     )
     
     user_prompt = f"Resume Text:\n---\n{raw_text[:4000]}\n---\nExtract JSON:"
@@ -218,7 +265,17 @@ def parse_resume_text_with_llm(raw_text: str) -> Dict[str, Any]:
     elif fb_loc:
         final_location = fb_loc
 
+    # Merge contact details
+    final_name = parsed_data.get("name") or fallback_data.get("name")
+    final_email = parsed_data.get("email") or fallback_data.get("email")
+    final_phone = parsed_data.get("phone") or fallback_data.get("phone")
+    final_country_code = parsed_data.get("country_code") or fallback_data.get("country_code") or "+91"
+
     return {
+        "name": str(final_name).strip() if final_name else None,
+        "email": str(final_email).strip() if final_email else None,
+        "phone": str(final_phone).strip() if final_phone else None,
+        "country_code": str(final_country_code).strip() if final_country_code else "+91",
         "skills": final_skills,
         "experience": final_experience,
         "location": final_location

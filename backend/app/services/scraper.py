@@ -285,12 +285,11 @@ def discover_jobs_via_platform(
         
         if platform.lower() == "linkedin":
             results = _scrape_linkedin_jobs(page, keyword, location, max_jobs, seen_urls)
-            
         elif platform.lower() == "naukri":
             results = _scrape_naukri_jobs(page, keyword, location, max_jobs, seen_urls)
-            
         else:
-            logger.warning(f"Crawling not supported for platform {platform}")
+            logger.info(f"Platform '{platform}' is public ATS/Web. Executing public job discovery...")
+            results = search_jobs_on_web(keyword, location)
         
         # Save session state after scraping
         save_session_state(context, platform)

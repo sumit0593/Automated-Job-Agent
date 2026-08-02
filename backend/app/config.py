@@ -38,10 +38,32 @@ class Settings(BaseSettings):
     # LLM & Embeddings Settings
     HF_TOKEN: str = os.getenv("HF_TOKEN", "")  # Hugging Face token for Inference API
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")  # Google Gemini API key
+    GROK_API_KEY: str = os.getenv("GROK_API_KEY", "")  # xAI Grok API key
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")  # OpenAI API key
+    OLLAMA_URL: str = os.getenv("OLLAMA_URL", "http://localhost:11434")  # Local Ollama server URL
     LLM_MODEL: str = "Qwen/Qwen2.5-72B-Instruct"  # High-performance serverless router model
     EMBEDDINGS_MODEL: str = "BAAI/bge-m3"
     RERANKER_MODEL: str = "BAAI/bge-reranker-large"
     
+    # LLM Routing Strategy: "cost_optimized", "balanced", "quality_first", "local_only"
+    LLM_ROUTING_STRATEGY: str = os.getenv("LLM_ROUTING_STRATEGY", "balanced")
+    
+    # Observability & Tracing (Langfuse & LangSmith)
+    LANGFUSE_PUBLIC_KEY: str = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+    LANGFUSE_SECRET_KEY: str = os.getenv("LANGFUSE_SECRET_KEY", "")
+    LANGFUSE_HOST: str = os.getenv("LANGFUSE_HOST", os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com"))
+    LANGFUSE_BASE_URL: str = os.getenv("LANGFUSE_BASE_URL", os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com"))
+    LANGSMITH_API_KEY: str = os.getenv("LANGSMITH_API_KEY", "")
+    LANGSMITH_PROJECT: str = os.getenv("LANGSMITH_PROJECT", "Automated-Job-Agent")
+
+    # Redis Hot Cache Settings
+    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    
+    # Model & Pipeline Versioning
+    EMBEDDING_VERSION: str = "bge-m3-v1"
+    RERANKER_VERSION: str = "bge-reranker-v1"
+    PIPELINE_VERSION: str = "agentic-rag-v1.2"
+
     # Storage Settings
     STORAGE_PATH: str = str(STORAGE_DIR)
     RESUMES_PATH: str = str(RESUMES_DIR)

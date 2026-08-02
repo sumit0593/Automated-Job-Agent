@@ -64,6 +64,43 @@ def upload_resume(file: UploadFile = File(...), db: Session = Depends(get_db)):
     db.add(db_resume)
     db.commit()
     db.refresh(db_resume)
+
+    # Auto-populate candidate UserProfile & AnswerBank using Hybrid RAG Extractor
+    try:
+        from backend.app.services.matching.resume_rag_extractor import resume_rag_extractor
+        extracted_data = resume_rag_extractor.extract_all(raw_text)
+        ext_prof = extracted_data.get("profile", {})
+        ext_ans = extracted_data.get("answers", {})
+
+        user_prof = db.query(models.UserProfile).first()
+        if not user_prof:
+            user_prof = models.UserProfile()
+            db.add(user_prof)
+
+        for f_key in ["name", "email", "phone", "country_code", "pan_number", "date_of_birth",
+                      "last_working_day", "experience_years", "current_ctc", "expected_ctc",
+                      "notice_period", "current_location", "preferred_locations", "skills",
+                      "linkedin_url", "github_url", "portfolio_url", "work_authorization",
+                      "willing_to_relocate", "remote_preference"]:
+            if ext_prof.get(f_key) is not None:
+                setattr(user_prof, f_key, ext_prof[f_key])
+
+        db.commit()
+
+        # Update AnswerBank with grounded answers
+        for q_key, answer in ext_ans.items():
+            if answer:
+                existing = db.query(models.AnswerBank).filter(models.AnswerBank.question_key == q_key).first()
+                if existing:
+                    existing.stored_answer = answer
+                else:
+                    db.add(models.AnswerBank(question_key=q_key, question_pattern=q_key, stored_answer=answer, category="rag_extracted"))
+        db.commit()
+        import logging
+        logging.getLogger("uvicorn.error").info(f"Hybrid RAG Extractor successfully populated UserProfile & AnswerBank for {user_prof.name}")
+    except Exception as prof_err:
+        import logging
+        logging.getLogger("uvicorn.error").warning(f"Could not run RAG extraction on upload: {prof_err}")
     
     # Index in Vector Store
     try:
@@ -138,3 +175,47 @@ def delete_resume(resume_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Database deletion failed: {db_err}")
         
     return {"message": "Resume deleted successfully"}
+
+@router.post("/{resume_id}/extract-profile")
+def extract_profile_from_resume_endpoint(resume_id: int, db: Session = Depends(get_db)):
+    """Re-runs Hybrid RAG Extraction over the selected resume to populate UserProfile and AnswerBank."""
+    resume = db.query(models.Resume).filter(models.Resume.id == resume_id).first()
+    if not resume or not resume.raw_text:
+        raise HTTPException(status_code=404, detail="Resume not found or contains no raw text")
+
+    from backend.app.services.matching.resume_rag_extractor import resume_rag_extractor
+    extracted_data = resume_rag_extractor.extract_all(resume.raw_text)
+    ext_prof = extracted_data.get("profile", {})
+    ext_ans = extracted_data.get("answers", {})
+
+    user_prof = db.query(models.UserProfile).first()
+    if not user_prof:
+        user_prof = models.UserProfile()
+        db.add(user_prof)
+
+    for field in ["name", "email", "phone", "country_code", "pan_number", "date_of_birth",
+                  "last_working_day", "experience_years", "current_ctc", "expected_ctc",
+                  "notice_period", "current_location", "preferred_locations", "skills",
+                  "linkedin_url", "github_url", "portfolio_url", "work_authorization",
+                  "willing_to_relocate", "remote_preference"]:
+        if ext_prof.get(field) is not None:
+            setattr(user_prof, field, ext_prof[field])
+
+    db.commit()
+    db.refresh(user_prof)
+
+    # Update AnswerBank
+    for q_key, answer in ext_ans.items():
+        if answer:
+            existing = db.query(models.AnswerBank).filter(models.AnswerBank.question_key == q_key).first()
+            if existing:
+                existing.stored_answer = answer
+            else:
+                db.add(models.AnswerBank(question_key=q_key, question_pattern=q_key, stored_answer=answer, category="rag_extracted"))
+    db.commit()
+
+    return {
+        "message": f"Successfully extracted profile & answer bank for {user_prof.name or 'Candidate'}",
+        "profile": user_prof,
+        "answers": ext_ans
+    }

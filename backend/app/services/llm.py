@@ -1,108 +1,84 @@
+"""
+LLM Service — Unified entry point for LLM calls.
+
+This module provides the backward-compatible query_llm() function used by
+all existing callers across the codebase. It now delegates to the intelligent
+LLM Router which selects the optimal model based on task complexity.
+
+Migration Guide:
+  OLD:  from backend.app.services.llm import query_llm
+        result = query_llm(system, user, json_mode=True)
+
+  NEW:  from backend.app.services.llm_router import llm_router, TaskType
+        result = llm_router.route(TaskType.PARSING, system, user, json_mode=True)
+
+Both approaches work — query_llm() is preserved for backward compatibility
+and defaults to TaskType.QA_COMPLEX routing.
+"""
+
 import json
 import logging
-import urllib.request
-import urllib.error
-from huggingface_hub import InferenceClient
-from backend.app.config import settings
+from typing import Optional
+
+from backend.app.services.llm_router import llm_router, TaskType
 
 logger = logging.getLogger("uvicorn.error")
 
-def query_llm(system_prompt: str, user_prompt: str, json_mode: bool = False) -> str:
+
+def query_llm(
+    system_prompt: str,
+    user_prompt: str,
+    json_mode: bool = False,
+    task_type: Optional[TaskType] = None,
+) -> str:
     """
-    Sends a query to the LLM (Gemini API, Hugging Face Inference API, or local Ollama).
+    Sends a query to the LLM with intelligent model selection.
+    
+    This is the backward-compatible wrapper. All existing callers
+    (qa_agent, tailor, critic, etc.) continue to work unchanged.
+    
+    New callers should pass task_type for optimal routing:
+        query_llm(sys, usr, task_type=TaskType.CLASSIFICATION)
+    
+    Without task_type, defaults to TaskType.QA_COMPLEX (Tier 2).
+    
+    Args:
+        system_prompt: System instructions for the LLM.
+        user_prompt: User message content.
+        json_mode: If True, requests JSON output format.
+        task_type: Optional task type for intelligent routing.
+                   If None, uses QA_COMPLEX as default.
+    
+    Returns:
+        LLM response text. Returns fallback JSON or warning string if all providers fail.
     """
-    # 0. Try Google Gemini API if key is provided
-    if getattr(settings, "GEMINI_API_KEY", ""):
-        try:
-            import google.generativeai as genai
-            logger.info("Querying Google Gemini API...")
-            genai.configure(api_key=settings.GEMINI_API_KEY)
-            model = genai.GenerativeModel("gemini-2.5-flash")
-            response = model.generate_content(f"{system_prompt}\n\n{user_prompt}")
-            if response and response.text:
-                return response.text
-        except Exception as e:
-            logger.error(f"Error querying Gemini API: {e}. Falling back...")
-
-    # 1. Try Hugging Face Inference API if token is provided
-    if settings.HF_TOKEN:
-        import requests
-        models_to_try = [
-            settings.LLM_MODEL,
-            "meta-llama/Llama-3.3-70B-Instruct",
-            "Qwen/Qwen2.5-Coder-32B-Instruct"
-        ]
-        seen = set()
-        models = [m for m in models_to_try if not (m in seen or seen.add(m))]
-        
-        headers = {
-            "Authorization": f"Bearer {settings.HF_TOKEN}",
-            "Content-Type": "application/json"
-        }
-        router_url = "https://router.huggingface.co/v1/chat/completions"
-        
-        for m in models:
-            try:
-                logger.info(f"Querying Hugging Face Serverless Router ({m})...")
-                payload = {
-                    "model": m,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    "max_tokens": 2000,
-                    "temperature": 0.3
-                }
-                res = requests.post(router_url, headers=headers, json=payload, timeout=30)
-                if res.status_code == 200:
-                    data = res.json()
-                    if "choices" in data and len(data["choices"]) > 0:
-                        return data["choices"][0]["message"]["content"]
-                else:
-                    logger.warning(f"Hugging Face router returned {res.status_code}: {res.text[:100]}")
-            except Exception as e:
-                logger.warning(f"Hugging Face model {m} unavailable ({e}). Trying next candidate...")
-
-    # 2. Try Local Ollama (defaulting to qwen2.5 or similar if running locally)
-    try:
-        logger.info("Attempting to query local Ollama server...")
-        ollama_url = "http://localhost:11434/api/chat"
-        payload = {
-            "model": "qwen2.5" if "qwen" in settings.LLM_MODEL.lower() else "llama3",
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            "stream": False,
-            "options": {
-                "temperature": 0.3
-            }
-        }
-        
-        req = urllib.request.Request(
-            ollama_url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST"
-        )
-        
-        with urllib.request.urlopen(req, timeout=10) as response:
-            res_data = json.loads(response.read().decode("utf-8"))
-            return res_data["message"]["content"]
-    except urllib.error.URLError as e:
-        logger.warning(f"Ollama not running or unreachable: {e.reason}")
-    except Exception as e:
-        logger.error(f"Ollama query failed: {e}")
-
-    # 3. Final Fallback: Return empty structure if json_mode, else warning
-    logger.warning("No LLM API/Server configured or running. Using rule-based fallback.")
-    if json_mode:
-        return json.dumps({
-            "skills": [],
-            "experience": 0.0,
-            "location": None,
-            "error": "LLM not configured. Using rule-based regex fallback."
-        })
-    else:
-        return "LLM not configured. Please set HF_TOKEN in your .env file or run Ollama locally."
-
+    effective_task = task_type or TaskType.QA_COMPLEX
+    
+    result = llm_router.route(
+        task_type=effective_task,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        json_mode=json_mode,
+    )
+    
+    # If the router returned empty, provide safe fallback (matches old behavior)
+    if not result:
+        logger.warning("query_llm: LLM Router returned empty. Using fallback.")
+        if json_mode:
+            return json.dumps({
+                "skills": [],
+                "experience": 0.0,
+                "location": None,
+                "error": "All LLM providers failed. Check API keys in .env file."
+            })
+        else:
+            return (
+                "LLM not available. Please configure at least one provider:\n"
+                "- Set GEMINI_API_KEY in .env for Google Gemini\n"
+                "- Set GROK_API_KEY in .env for xAI Grok\n"
+                "- Set OPENAI_API_KEY in .env for OpenAI\n"
+                "- Set HF_TOKEN in .env for HuggingFace\n"
+                "- Run Ollama locally (ollama serve)"
+            )
+    
+    return result

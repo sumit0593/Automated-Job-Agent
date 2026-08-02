@@ -179,3 +179,14 @@ def debug_qdrant(db: Session = Depends(get_db)):
         }
     except Exception as e:
         return {"error": str(e)}
+
+@router.post("/clear")
+def clear_matched_applications(db: Session = Depends(get_db)):
+    """Wipes all matched application records from database."""
+    try:
+        deleted = db.query(models.Application).delete()
+        db.commit()
+        return {"success": True, "deleted_count": deleted}
+    except Exception as e:
+        logger.error(f"Error clearing applications: {e}")
+        return {"success": False, "error": str(e)}

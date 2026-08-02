@@ -1,13 +1,22 @@
-# Virtual environment
+# Virtual environment & Python cache
 .venv/
+venv/
+ENV/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Local Database & Secrets (Security Critical)
 secret.key
 job_agent.db
 job_agent.db-journal
+*.db
 .env
+.env.local
 
 # Vector Database Data
 qdrant_db/
@@ -16,10 +25,22 @@ qdrant_db/
 node_modules/
 dist/
 .vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Application Resumes Storage
+# Application Resumes Storage & Logs
+storage/
 storage/resumes/
 storage/tailored_resumes/
 storage/browser_profiles/
 storage/screenshots/
+storage/logs/
 backend/storage/
+*.log
+
+# IDE & OS temporary files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

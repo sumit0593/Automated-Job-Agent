@@ -14,19 +14,17 @@ from backend.app import models
 
 logger = logging.getLogger("uvicorn.error")
 
-# Session expiry threshold — re-login required after this period
-SESSION_MAX_AGE_HOURS = 6
+# Session expiry threshold — re-login required after this period (7 days)
+SESSION_MAX_AGE_HOURS = 168
 
 
 def is_session_valid(credential: models.UserCredential) -> bool:
     """
     Checks if a credential's session is still likely valid based on:
     1. Whether session cookies exist
-    2. Whether the last login was within SESSION_MAX_AGE_HOURS
+    2. Whether the last login was within SESSION_MAX_AGE_HOURS (7 days)
     
-    Note: This is a heuristic check. The actual browser profile may still
-    have a valid session even if cookies in DB are stale, because 
-    launchPersistentContext() preserves the real browser state.
+    Note: Persistent browser contexts maintain session state across restarts.
     """
     if not credential:
         return False
@@ -35,9 +33,9 @@ def is_session_valid(credential: models.UserCredential) -> bool:
         logger.info(f"Session invalid for {credential.platform}: no cookies stored.")
         return False
     
+    # If session cookies are present, consider session valid (browser profile retains state)
     if not credential.last_login_at:
-        logger.info(f"Session invalid for {credential.platform}: no login timestamp.")
-        return False
+        return True
     
     age = datetime.utcnow() - credential.last_login_at
     max_age = timedelta(hours=SESSION_MAX_AGE_HOURS)

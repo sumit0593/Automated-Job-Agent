@@ -18,7 +18,15 @@ import {
   Lock,
   Globe,
   Settings,
-  ShieldCheck
+  ShieldCheck,
+  Clock,
+  Calendar,
+  Activity,
+  Plus,
+  PlayCircle,
+  StopCircle,
+  Check,
+  XCircle
 } from 'lucide-react';
 
 const API_BASE = "http://localhost:8000/api";
@@ -65,18 +73,26 @@ function App() {
 
   // User Profile & Answer Bank states
   const [userProfileData, setUserProfileData] = useState({
-    name: "Sumit Kumar",
-    email: "sumit@gmail.com",
-    phone: "+91 7011676185",
-    experience_years: 3.0,
-    current_ctc: "₹5 LPA",
-    expected_ctc: "₹8 LPA",
-    notice_period: "Immediate",
-    current_location: "Noida",
-    preferred_locations: ["Noida", "Delhi", "Gurgaon", "Remote"],
-    work_authorization: "India",
-    willing_to_relocate: "Yes",
-    remote_preference: "Hybrid"
+    name: "",
+    email: "",
+    country_code: "+91",
+    phone: "",
+    pan_number: "",
+    date_of_birth: "",
+    last_working_day: "",
+    experience_years: 0.0,
+    current_ctc: "",
+    expected_ctc: "",
+    notice_period: "",
+    current_location: "",
+    preferred_locations: [],
+    skills: [],
+    linkedin_url: "",
+    github_url: "",
+    portfolio_url: "",
+    work_authorization: "",
+    willing_to_relocate: "",
+    remote_preference: ""
   });
 
   const [answerBankData, setAnswerBankData] = useState({
@@ -85,6 +101,27 @@ function App() {
     career_goal: "To become a Lead AI Platform Engineer building scalable agentic systems.",
     why_leaving: "Seeking higher impact roles specializing in Generative AI and Multi-Agent Orchestration."
   });
+
+  // Scheduler & Queue states
+  const [schedulerStatus, setSchedulerStatus] = useState({ running: false, scheduled_jobs: 0 });
+  const [schedulesList, setSchedulesList] = useState([]);
+  const [schedulerTasks, setSchedulerTasks] = useState([]);
+  const [rateLimitStats, setRateLimitStats] = useState({});
+  const [isScheduling, setIsScheduling] = useState(false);
+  const [scheduleForm, setScheduleForm] = useState({
+    selectedPlatforms: ["naukri", "linkedin"],
+    keyword: "GenAI Engineer",
+    locationsInput: "Remote, Noida, Bengaluru",
+    preset: "0 9,18 * * 1-5",
+    customCron: "0 9,18 * * 1-5",
+    maxJobs: 25,
+    autoApply: true,
+    minMatchScore: 70
+  });
+
+  const [appFilter, setAppFilter] = useState('all');
+  const [selectedMatchIds, setSelectedMatchIds] = useState(new Set());
+  const [isBatchApplying, setIsBatchApplying] = useState(false);
 
   // Health check
   const [healthStatus, setHealthStatus] = useState("connecting");
@@ -148,14 +185,203 @@ function App() {
     }
   };
 
+  const fetchSchedulerData = async () => {
+    try {
+      const [statusRes, schedRes, tasksRes, limitsRes] = await Promise.all([
+        fetch(`${API_BASE}/schedule/status`),
+        fetch(`${API_BASE}/schedule/schedules`),
+        fetch(`${API_BASE}/schedule/tasks?limit=20`),
+        fetch(`${API_BASE}/schedule/rate-limits`)
+      ]);
+      if (statusRes.ok) {
+        const data = await statusRes.json();
+        setSchedulerStatus(data);
+        setHealthStatus("online");
+      }
+      if (schedRes.ok) {
+        const data = await schedRes.json();
+        setSchedulesList(data.schedules || []);
+      }
+      if (tasksRes.ok) {
+        const data = await tasksRes.json();
+        setSchedulerTasks(data.tasks || []);
+      }
+      if (limitsRes.ok) {
+        const data = await limitsRes.json();
+        setRateLimitStats(data || {});
+      }
+    } catch (e) {
+      console.warn("Could not fetch scheduler data", e);
+    }
+  };
+
+  const handleToggleSchedulePlatform = (plat) => {
+    setScheduleForm(prev => {
+      const exists = prev.selectedPlatforms.includes(plat);
+      if (exists) {
+        if (prev.selectedPlatforms.length === 1) return prev;
+        return { ...prev, selectedPlatforms: prev.selectedPlatforms.filter(p => p !== plat) };
+      } else {
+        return { ...prev, selectedPlatforms: [...prev.selectedPlatforms, plat] };
+      }
+    });
+  };
+
+  const handleCreateSchedule = async (e) => {
+    e.preventDefault();
+    if (!scheduleForm.keyword.trim()) {
+      alert("Please enter a search keyword.");
+      return;
+    }
+    if (scheduleForm.selectedPlatforms.length === 0) {
+      alert("Please select at least one job platform.");
+      return;
+    }
+
+    const cronExpr = scheduleForm.preset === "custom" ? scheduleForm.customCron : scheduleForm.preset;
+    setIsScheduling(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/schedule/discovery`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          platforms: scheduleForm.selectedPlatforms,
+          keyword: scheduleForm.keyword.trim(),
+          locations: scheduleForm.locationsInput.split(",").map(s => s.trim()).filter(Boolean),
+          cron_expression: cronExpr,
+          max_jobs: parseInt(scheduleForm.maxJobs, 10),
+          auto_apply: scheduleForm.autoApply,
+          min_match_score: scheduleForm.minMatchScore
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        await fetchSchedulerData();
+        setIsScheduling(false);
+        setTimeout(() => {
+          alert(`Successfully scheduled ${data.count} recurring discovery task(s)!`);
+        }, 50);
+      } else {
+        const err = await res.json();
+        setIsScheduling(false);
+        alert(`Failed to create schedule: ${err.detail || "Server error"}`);
+      }
+    } catch (err) {
+      setIsScheduling(false);
+      alert(`Error creating schedule: ${err.message}`);
+    }
+  };
+
+  const handleRemoveSchedule = async (jobId) => {
+    if (!confirm(`Are you sure you want to remove recurring schedule '${jobId}'?`)) return;
+    try {
+      const res = await fetch(`${API_BASE}/schedule/${encodeURIComponent(jobId)}`, { method: "DELETE" });
+      if (res.ok) {
+        fetchSchedulerData();
+      }
+    } catch (err) {
+      alert(`Error removing schedule: ${err.message}`);
+    }
+  };
+
+  const handleStartScheduler = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/schedule/start`, { method: "POST" });
+      if (res.ok) {
+        fetchSchedulerData();
+      }
+    } catch (err) {
+      alert(`Error starting scheduler: ${err.message}`);
+    }
+  };
+
+  const handleStopScheduler = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/schedule/stop`, { method: "POST" });
+      if (res.ok) {
+        fetchSchedulerData();
+      }
+    } catch (err) {
+      alert(`Error stopping scheduler: ${err.message}`);
+    }
+  };
+
+  const handleCancelTask = async (taskId) => {
+    try {
+      const res = await fetch(`${API_BASE}/schedule/tasks/${taskId}`, { method: "DELETE" });
+      if (res.ok) {
+        fetchSchedulerData();
+      }
+    } catch (err) {
+      alert(`Error cancelling task: ${err.message}`);
+    }
+  };
+
+  const handleClearAllSchedules = async () => {
+    if (!confirm("Are you sure you want to delete ALL recurring discovery schedules?")) return;
+    try {
+      const res = await fetch(`${API_BASE}/schedule/schedules/all`, { method: "DELETE" });
+      if (res.ok) {
+        const data = await res.json();
+        alert(`Cleared ${data.count} recurring schedules.`);
+        fetchSchedulerData();
+      }
+    } catch (err) {
+      alert(`Error clearing schedules: ${err.message}`);
+    }
+  };
+
+  const handleResetRateLimits = async () => {
+    if (!confirm("Are you sure you want to reset all platform rate limit counters? (Useful for testing)")) return;
+    try {
+      const res = await fetch(`${API_BASE}/schedule/rate-limits/reset`, { method: "POST" });
+      if (res.ok) {
+        alert("Platform rate limit counters reset successfully!");
+        fetchSchedulerData();
+      }
+    } catch (err) {
+      alert(`Error resetting rate limits: ${err.message}`);
+    }
+  };
+
+  const handleClearTaskHistory = async () => {
+    if (!confirm("Are you sure you want to clear completed, failed, and cancelled task history?")) return;
+    try {
+      const res = await fetch(`${API_BASE}/schedule/tasks/history`, { method: "DELETE" });
+      if (res.ok) {
+        const data = await res.json();
+        alert(`Cleared ${data.count} task execution logs.`);
+        fetchSchedulerData();
+      }
+    } catch (err) {
+      alert(`Error clearing task history: ${err.message}`);
+    }
+  };
+
   useEffect(() => {
     fetchResumes();
     fetchJobs();
     fetchCredentials();
     fetchUserProfile();
     fetchAnswerBank();
+    fetchSchedulerData();
     checkHealth();
+
+    const healthInterval = setInterval(checkHealth, 10000);
+    return () => clearInterval(healthInterval);
   }, []);
+
+  // Poll scheduler tab data if active
+  useEffect(() => {
+    let intervalId;
+    if (activeTab === "scheduler") {
+      fetchSchedulerData();
+      intervalId = setInterval(fetchSchedulerData, 10000);
+    }
+    return () => clearInterval(intervalId);
+  }, [activeTab]);
 
   // Poll application logs if actively applying
   useEffect(() => {
@@ -257,12 +483,26 @@ function App() {
     }
   };
 
+  const [isUploadingCv, setIsUploadingCv] = useState(false);
+  const [uploadStageText, setUploadStageText] = useState("⚡ Indexing PDF sections & vectorizing with BGE-M3...");
+
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
     const formData = new FormData();
     formData.append("file", file);
+
+    setIsUploadingCv(true);
+    setUploadStageText("⚡ Extracting PDF text & building semantic sections...");
+
+    // Stage text timer
+    const t1 = setTimeout(() => {
+      setUploadStageText("🧠 Running Dense BGE-M3 Vector Store indexing...");
+    }, 1800);
+    const t2 = setTimeout(() => {
+      setUploadStageText("🔍 Grounded RAG Extraction (BM25 + Cross-Encoder Reranker)...");
+    }, 4500);
 
     try {
       setHealthStatus("processing");
@@ -275,7 +515,9 @@ function App() {
         setResumes([data, ...resumes]);
         setActiveResumeId(data.id);
         setActiveResume(data);
-        alert("Resume successfully uploaded, parsed, and indexed!");
+        await fetchUserProfile();
+        await fetchAnswerBank();
+        alert("✅ Resume successfully uploaded, parsed, and synced to Candidate Profile!");
       } else {
         const err = await res.json();
         alert(`Parsing failed: ${err.detail || "Server error"}`);
@@ -283,6 +525,9 @@ function App() {
     } catch (err) {
       alert(`Upload error: ${err.message}`);
     } finally {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      setIsUploadingCv(false);
       checkHealth();
     }
   };
@@ -415,6 +660,128 @@ function App() {
     setSelectedAppId(appId);
     fetchApplicationDetail(appId);
     setActiveTab("applications");
+  };
+
+  // Batch Selection Helpers
+  const toggleMatchSelection = (appId) => {
+    setSelectedMatchIds(prev => {
+      const next = new Set(prev);
+      if (next.has(appId)) next.delete(appId);
+      else next.add(appId);
+      return next;
+    });
+  };
+
+  const toggleSelectAllMatches = (filteredMatches) => {
+    const allIds = filteredMatches.map(m => m.application_id).filter(Boolean);
+    const allSelected = allIds.length > 0 && allIds.every(id => selectedMatchIds.has(id));
+    if (allSelected) {
+      setSelectedMatchIds(new Set());
+    } else {
+      setSelectedMatchIds(new Set(allIds));
+    }
+  };
+
+  const handleBatchApply = async () => {
+    const ids = Array.from(selectedMatchIds).filter(Boolean);
+    if (ids.length === 0) return;
+    setIsBatchApplying(true);
+    try {
+      const res = await fetch(`${API_BASE}/schedule/batch-apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ application_ids: ids, delay_minutes: 0 })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSelectedMatchIds(new Set());
+        alert(`✅ ${ids.length} job(s) queued for auto-apply! They will be processed sequentially (3 min apart).`);
+      } else {
+        const err = await res.json();
+        alert(`Failed to queue batch: ${err.detail || "Server error"}`);
+      }
+    } catch (err) {
+      alert(`Batch apply error: ${err.message}`);
+    } finally {
+      setIsBatchApplying(false);
+    }
+  };
+
+  const handleClearMatches = async () => {
+    if (!window.confirm("Are you sure you want to clear all matched applications from Tab 3?")) return;
+    try {
+      const res = await fetch(`${API_BASE}/matching/clear`, { method: "POST" });
+      if (res.ok) {
+        setMatches([]);
+        setSelectedMatchIds(new Set());
+        alert("✅ Tab 3 match records successfully cleared!");
+      }
+    } catch (err) {
+      alert(`Clear matches failed: ${err.message}`);
+    }
+  };
+
+  const handleClearProfile = async () => {
+    if (!window.confirm("Are you sure you want to clear your Candidate Profile, Answer Bank, and Match Results? This action will reset all stored profile fields and match records.")) {
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/profile/clear`, { method: "POST" });
+      await fetch(`${API_BASE}/matching/clear`, { method: "POST" });
+      if (res.ok) {
+        setUserProfileData({
+          name: "",
+          email: "",
+          country_code: "+91",
+          phone: "",
+          pan_number: "",
+          date_of_birth: "",
+          last_working_day: "",
+          experience_years: 0.0,
+          current_ctc: "",
+          expected_ctc: "",
+          notice_period: "",
+          current_location: "",
+          preferred_locations: [],
+          skills: [],
+          linkedin_url: "",
+          github_url: "",
+          portfolio_url: "",
+          work_authorization: "",
+          willing_to_relocate: "",
+          remote_preference: ""
+        });
+        setAnswerBankData({});
+        setMatches([]);
+        setSelectedMatchIds(new Set());
+        alert("✅ Candidate Profile, Answer Bank, and Match Results have been safely reset!");
+      } else {
+        alert("Failed to clear profile data.");
+      }
+    } catch (err) {
+      alert(`Clear failed: ${err.message}`);
+    }
+  };
+
+  const handleReextractProfile = async (resumeId) => {
+    const targetId = resumeId || activeResumeId;
+    if (!targetId) {
+      alert("Please upload or select a resume first.");
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/resumes/${targetId}/extract-profile`, { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.profile) setUserProfileData(data.profile);
+        if (data.answers) setAnswerBankData(data.answers);
+        alert(`✅ Re-extracted candidate profile & answer bank from resume using Hybrid RAG!`);
+      } else {
+        alert("Failed to extract profile from resume.");
+      }
+    } catch (err) {
+      alert(`Extraction failed: ${err.message}`);
+    }
   };
 
   // Tailor Resume
@@ -574,6 +941,13 @@ function App() {
           <Sparkles size={18} style={{ verticalAlign: 'middle', marginRight: '6px' }} />
           4. Tailoring & Apply
         </button>
+        <button 
+          className={`tab-btn ${activeTab === 'scheduler' ? 'active' : ''}`}
+          onClick={() => setActiveTab("scheduler")}
+        >
+          <Clock size={18} style={{ verticalAlign: 'middle', marginRight: '6px' }} />
+          5. Scheduler & Automation ({schedulesList.length})
+        </button>
       </div>
 
       {/* Tab 1: Candidate Profile & Accounts (Merged Tab 1 + Tab 4) */}
@@ -586,15 +960,37 @@ function App() {
             <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
               <h2 className="gradient-text" style={{ fontSize: '1.25rem', fontWeight: 700 }}>Resume Portal</h2>
               
-              <div className="upload-zone" onClick={() => document.getElementById('pdf-file-input').click()}>
-                <UploadCloud className="upload-icon" />
-                <p style={{ fontWeight: 600, fontSize: '0.95rem' }}>Upload CV (PDF format)</p>
-                <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.25rem' }}>BGE-M3 local indexing on upload</p>
+              <div 
+                className="upload-zone" 
+                onClick={() => !isUploadingCv && document.getElementById('pdf-file-input').click()}
+                style={{
+                  cursor: isUploadingCv ? 'wait' : 'pointer',
+                  borderColor: isUploadingCv ? 'var(--primary)' : undefined,
+                  background: isUploadingCv ? 'rgba(99, 102, 241, 0.12)' : undefined,
+                  pointerEvents: isUploadingCv ? 'none' : 'auto'
+                }}
+              >
+                {isUploadingCv ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem', padding: '0.5rem 0' }}>
+                    <div className="spinner" style={{ width: '36px', height: '36px', border: '3px solid rgba(99,102,241,0.25)', borderTopColor: '#818cf8', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                    <p style={{ fontWeight: 700, fontSize: '0.9rem', color: '#a5b4fc' }}>Processing & Indexing Resume...</p>
+                    <p style={{ color: 'var(--text-secondary)', fontSize: '0.78rem', animation: 'pulse 1.5s infinite alternate', textAlign: 'center' }}>
+                      {uploadStageText}
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <UploadCloud className="upload-icon" />
+                    <p style={{ fontWeight: 600, fontSize: '0.95rem' }}>Upload CV (PDF format)</p>
+                    <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.25rem' }}>BGE-M3 local indexing on upload</p>
+                  </>
+                )}
                 <input 
                   id="pdf-file-input"
                   type="file" 
                   accept="application/pdf"
                   onChange={handleFileUpload} 
+                  disabled={isUploadingCv}
                   style={{ display: 'none' }} 
                 />
               </div>
@@ -695,24 +1091,22 @@ function App() {
               <h2 className="gradient-text" style={{ fontSize: '1.25rem', fontWeight: 700 }}>Connect Job Accounts</h2>
               
               <form onSubmit={handleSaveCredentials} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <button 
-                    type="button"
-                    className={`btn ${newCred.platform === 'linkedin' ? 'btn-primary' : ''}`}
-                    onClick={() => setNewCred({ ...newCred, platform: "linkedin" })}
-                    style={{ flex: 1, padding: '0.4rem' }}
-                  >
-                    LinkedIn
-                  </button>
-                  <button 
-                    type="button"
-                    className={`btn ${newCred.platform === 'naukri' ? 'btn-primary' : ''}`}
-                    onClick={() => setNewCred({ ...newCred, platform: "naukri" })}
-                    style={{ flex: 1, padding: '0.4rem' }}
-                  >
-                    Naukri
-                  </button>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.4rem' }}>
+                  {['linkedin', 'naukri', 'glassdoor', 'indeed', 'wellfound', 'workday'].map((plat) => (
+                    <button 
+                      key={plat}
+                      type="button"
+                      className={`btn ${newCred.platform === plat ? 'btn-primary' : ''}`}
+                      onClick={() => setNewCred({ ...newCred, platform: plat })}
+                      style={{ padding: '0.4rem 0.25rem', fontSize: '0.75rem', textTransform: 'capitalize' }}
+                    >
+                      {plat === 'linkedin' ? 'LinkedIn' : plat === 'naukri' ? 'Naukri' : plat}
+                    </button>
+                  ))}
                 </div>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: 0 }}>
+                  💡 <strong>Public ATS Notice:</strong> Greenhouse, Lever, Ashby, and SmartRecruiters forms submit directly using your Candidate Profile without requiring account logins.
+                </p>
 
                 <div className="input-group">
                   <span className="input-label">Username / Email</span>
@@ -799,11 +1193,33 @@ function App() {
           {/* Right Column: Personal Profile Data & Stored Answer Bank */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
             <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-              <div>
-                <h2 className="gradient-text" style={{ fontSize: '1.25rem', fontWeight: 700 }}>Candidate Profile (`profile.json`)</h2>
-                <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
-                  Deterministic profile data used for notice period, CTC, locations, and experience questions.
-                </p>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.75rem' }}>
+                <div>
+                  <h2 className="gradient-text" style={{ fontSize: '1.25rem', fontWeight: 700 }}>Candidate Profile (`profile.json`)</h2>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+                    Grounded profile data extracted via Hybrid RAG (Dense + BM25 + Cross-Encoder) — zero fake data.
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <button 
+                    type="button" 
+                    className="btn btn-secondary" 
+                    style={{ fontSize: '0.75rem', padding: '0.35rem 0.65rem' }}
+                    onClick={() => handleReextractProfile(activeResumeId)}
+                    title="Re-run Hybrid RAG Extraction over selected resume"
+                  >
+                    ⚡ Re-extract from CV
+                  </button>
+                  <button 
+                    type="button" 
+                    className="btn" 
+                    style={{ fontSize: '0.75rem', padding: '0.35rem 0.65rem', background: 'rgba(239, 68, 68, 0.15)', color: '#f87171', borderColor: 'rgba(239, 68, 68, 0.3)' }}
+                    onClick={handleClearProfile}
+                    title="Safely reset all candidate profile and answer bank records in DB"
+                  >
+                    🗑️ Clear Profile & Answer Bank
+                  </button>
+                </div>
               </div>
 
               <form onSubmit={handleSaveUserProfile} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -814,6 +1230,7 @@ function App() {
                       type="text" 
                       value={userProfileData.name || ""} 
                       onChange={(e) => setUserProfileData({ ...userProfileData, name: e.target.value })}
+                      placeholder="e.g. Sumit Kumar"
                       className="input-field" 
                     />
                   </div>
@@ -823,18 +1240,30 @@ function App() {
                       type="text" 
                       value={userProfileData.email || ""} 
                       onChange={(e) => setUserProfileData({ ...userProfileData, email: e.target.value })}
+                      placeholder="email@example.com"
                       className="input-field" 
                     />
                   </div>
                 </div>
 
                 <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+                  <div className="input-group" style={{ width: '100px' }}>
+                    <span className="input-label">Country Code</span>
+                    <input 
+                      type="text" 
+                      value={userProfileData.country_code || "+91"} 
+                      onChange={(e) => setUserProfileData({ ...userProfileData, country_code: e.target.value })}
+                      placeholder="+91"
+                      className="input-field" 
+                    />
+                  </div>
                   <div className="input-group" style={{ flex: 1, minWidth: '140px' }}>
                     <span className="input-label">Phone</span>
                     <input 
                       type="text" 
                       value={userProfileData.phone || ""} 
                       onChange={(e) => setUserProfileData({ ...userProfileData, phone: e.target.value })}
+                      placeholder="7011676185"
                       className="input-field" 
                     />
                   </div>
@@ -843,7 +1272,7 @@ function App() {
                     <input 
                       type="number" 
                       step="0.5"
-                      value={userProfileData.experience_years || 3.0} 
+                      value={userProfileData.experience_years || 0.0} 
                       onChange={(e) => setUserProfileData({ ...userProfileData, experience_years: Number(e.target.value) })}
                       className="input-field" 
                     />
@@ -855,8 +1284,9 @@ function App() {
                     <span className="input-label">Current CTC</span>
                     <input 
                       type="text" 
-                      value={userProfileData.current_ctc || "₹5 LPA"} 
+                      value={userProfileData.current_ctc || ""} 
                       onChange={(e) => setUserProfileData({ ...userProfileData, current_ctc: e.target.value })}
+                      placeholder="e.g. ₹7 LPA"
                       className="input-field" 
                     />
                   </div>
@@ -864,8 +1294,42 @@ function App() {
                     <span className="input-label">Expected CTC</span>
                     <input 
                       type="text" 
-                      value={userProfileData.expected_ctc || "₹8 LPA"} 
+                      value={userProfileData.expected_ctc || ""} 
                       onChange={(e) => setUserProfileData({ ...userProfileData, expected_ctc: e.target.value })}
+                      placeholder="e.g. ₹12 LPA"
+                      className="input-field" 
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+                  <div className="input-group" style={{ flex: 1, minWidth: '130px' }}>
+                    <span className="input-label">PAN Card No.</span>
+                    <input 
+                      type="text" 
+                      value={userProfileData.pan_number || ""} 
+                      onChange={(e) => setUserProfileData({ ...userProfileData, pan_number: e.target.value })}
+                      placeholder="e.g. ABCDE1234F"
+                      className="input-field" 
+                    />
+                  </div>
+                  <div className="input-group" style={{ flex: 1, minWidth: '130px' }}>
+                    <span className="input-label">Date of Birth (DOB)</span>
+                    <input 
+                      type="text" 
+                      value={userProfileData.date_of_birth || ""} 
+                      onChange={(e) => setUserProfileData({ ...userProfileData, date_of_birth: e.target.value })}
+                      placeholder="DD/MM/YYYY"
+                      className="input-field" 
+                    />
+                  </div>
+                  <div className="input-group" style={{ flex: 1, minWidth: '130px' }}>
+                    <span className="input-label">Last Working Day (LWD)</span>
+                    <input 
+                      type="text" 
+                      value={userProfileData.last_working_day || ""} 
+                      onChange={(e) => setUserProfileData({ ...userProfileData, last_working_day: e.target.value })}
+                      placeholder="e.g. 31/08/2026 or N/A"
                       className="input-field" 
                     />
                   </div>
@@ -876,8 +1340,9 @@ function App() {
                     <span className="input-label">Notice Period</span>
                     <input 
                       type="text" 
-                      value={userProfileData.notice_period || "Immediate"} 
+                      value={userProfileData.notice_period || ""} 
                       onChange={(e) => setUserProfileData({ ...userProfileData, notice_period: e.target.value })}
+                      placeholder="e.g. Immediate / 30 Days"
                       className="input-field" 
                     />
                   </div>
@@ -885,8 +1350,9 @@ function App() {
                     <span className="input-label">Current Location</span>
                     <input 
                       type="text" 
-                      value={userProfileData.current_location || "Noida"} 
+                      value={userProfileData.current_location || ""} 
                       onChange={(e) => setUserProfileData({ ...userProfileData, current_location: e.target.value })}
+                      placeholder="e.g. Noida"
                       className="input-field" 
                     />
                   </div>
@@ -899,6 +1365,76 @@ function App() {
                     value={Array.isArray(userProfileData.preferred_locations) ? userProfileData.preferred_locations.join(", ") : (userProfileData.preferred_locations || "")} 
                     onChange={(e) => setUserProfileData({ ...userProfileData, preferred_locations: e.target.value.split(",").map(s => s.trim()) })}
                     className="input-field" 
+                  />
+                </div>
+
+                {/* Social Profiles & Portfolio Links */}
+                <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', borderTop: '1px solid var(--border-color)', paddingTop: '0.85rem' }}>
+                  <div className="input-group" style={{ flex: 1, minWidth: '160px' }}>
+                    <span className="input-label">LinkedIn URL</span>
+                    <input 
+                      type="text" 
+                      value={userProfileData.linkedin_url || ""} 
+                      onChange={(e) => setUserProfileData({ ...userProfileData, linkedin_url: e.target.value })}
+                      placeholder="linkedin.com/in/username"
+                      className="input-field" 
+                    />
+                  </div>
+                  <div className="input-group" style={{ flex: 1, minWidth: '160px' }}>
+                    <span className="input-label">GitHub URL</span>
+                    <input 
+                      type="text" 
+                      value={userProfileData.github_url || ""} 
+                      onChange={(e) => setUserProfileData({ ...userProfileData, github_url: e.target.value })}
+                      placeholder="github.com/username"
+                      className="input-field" 
+                    />
+                  </div>
+                  <div className="input-group" style={{ flex: 1, minWidth: '160px' }}>
+                    <span className="input-label">Portfolio URL</span>
+                    <input 
+                      type="text" 
+                      value={userProfileData.portfolio_url || ""} 
+                      onChange={(e) => setUserProfileData({ ...userProfileData, portfolio_url: e.target.value })}
+                      placeholder="portfolio.vercel.app"
+                      className="input-field" 
+                    />
+                  </div>
+                </div>
+
+                {/* Skills Tags Tab / Container */}
+                <div className="input-group" style={{ borderTop: '1px solid var(--border-color)', paddingTop: '0.85rem' }}>
+                  <span className="input-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>Candidate Core Skills ({Array.isArray(userProfileData.skills) ? userProfileData.skills.length : 0})</span>
+                  </span>
+                  <div className="tag-container" style={{ minHeight: '42px', padding: '0.5rem', background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-color)', borderRadius: '8px', display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
+                    {Array.isArray(userProfileData.skills) && userProfileData.skills.length > 0 ? (
+                      userProfileData.skills.map((sk, idx) => (
+                        <span key={idx} className="tag" style={{ background: '#312e81', borderColor: '#6366f1', color: '#a5b4fc', fontSize: '0.75rem', padding: '0.2rem 0.6rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+                          {sk}
+                          <button 
+                            type="button" 
+                            style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', padding: 0, fontSize: '0.8rem', fontWeight: 700 }}
+                            onClick={() => {
+                              const updated = userProfileData.skills.filter((_, i) => i !== idx);
+                              setUserProfileData({ ...userProfileData, skills: updated });
+                            }}
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))
+                    ) : (
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>No skills added yet. Upload a CV or enter skills separated by commas below.</span>
+                    )}
+                  </div>
+                  <input 
+                    type="text" 
+                    placeholder="Type skills comma separated to add/edit (e.g. Python, FastAPI, React)..."
+                    value={Array.isArray(userProfileData.skills) ? userProfileData.skills.join(", ") : ""} 
+                    onChange={(e) => setUserProfileData({ ...userProfileData, skills: e.target.value.split(",").map(s => s.trim()).filter(Boolean) })}
+                    className="input-field" 
+                    style={{ marginTop: '0.35rem' }}
                   />
                 </div>
 
@@ -986,9 +1522,17 @@ function App() {
                 onChange={(e) => setScrapingPlatform(e.target.value)}
                 style={{ background: '#0f131a', color: 'var(--text-primary)' }}
               >
-                <option value="">Greenhouse / Lever API</option>
-                <option value="linkedin">LinkedIn Crawler</option>
+                <option value="">All Job Boards & Public ATS (Auto-Detect)</option>
                 <option value="naukri">Naukri Crawler</option>
+                <option value="linkedin">LinkedIn Crawler</option>
+                <option value="indeed">Indeed Search (API/Web)</option>
+                <option value="wellfound">Wellfound (Startup Jobs)</option>
+                <option value="glassdoor">Glassdoor Jobs</option>
+                <option value="workday">Workday ATS</option>
+                <option value="greenhouse">Greenhouse ATS</option>
+                <option value="lever">Lever ATS</option>
+                <option value="ashby">Ashby ATS</option>
+                <option value="smartrecruiters">SmartRecruiters ATS</option>
               </select>
             </div>
           </div>
@@ -1061,13 +1605,26 @@ function App() {
       {/* Tab 2: Match Rankings */}
       {activeTab === "matching" && (
         <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-          <div>
-            <h2 className="gradient-text" style={{ fontSize: '1.5rem', fontWeight: 800, marginBottom: '0.25rem' }}>
-              Agentic RAG Semantic & Hybrid Match Engine
-            </h2>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-              Multi-stage pipeline: HyDE Query Expansion → Hybrid Vector + Lexical Search → CRAG Adaptive Retries → BGE Cross-Encoder Reranker → MMR Deduplication.
-            </p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
+            <div>
+              <h2 className="gradient-text" style={{ fontSize: '1.5rem', fontWeight: 800, marginBottom: '0.25rem' }}>
+                Agentic RAG Semantic & Hybrid Match Engine
+              </h2>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                Multi-stage pipeline: HyDE Query Expansion → Hybrid Vector + Lexical Search → CRAG Adaptive Retries → BGE Cross-Encoder Reranker → MMR Deduplication.
+              </p>
+            </div>
+            {matches.length > 0 && (
+              <button 
+                type="button" 
+                className="btn" 
+                style={{ fontSize: '0.75rem', padding: '0.35rem 0.65rem', background: 'rgba(239, 68, 68, 0.15)', color: '#f87171', borderColor: 'rgba(239, 68, 68, 0.3)' }}
+                onClick={handleClearMatches}
+                title="Wipe all Tab 3 match records"
+              >
+                🗑️ Clear Match Results
+              </button>
+            )}
           </div>
 
           {/* RAG Telemetry & Observability Drawer */}
@@ -1092,30 +1649,166 @@ function App() {
             </div>
           )}
 
-          {/* Match Score Threshold Filter Slider */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', background: 'rgba(15, 23, 42, 0.4)', padding: '0.75rem 1rem', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-            <label style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: 600, minWidth: '210px' }}>
-              🎯 Match Threshold Filter: <strong style={{ color: 'var(--primary)' }}>{matchThreshold}%</strong>
-            </label>
-            <input 
-              type="range" 
-              min="0" 
-              max="90" 
-              step="5" 
-              value={matchThreshold} 
-              onChange={(e) => setMatchThreshold(Number(e.target.value))}
-              style={{ accentColor: 'var(--primary)', cursor: 'pointer', flex: 1 }}
-            />
-            <button className="btn btn-secondary" style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem' }} onClick={handleMatchResume}>
-              Apply Filter
-            </button>
+          {/* Application Status Metrics Breakdown Cards */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '0.75rem', marginBottom: '0.5rem' }}>
+            <div 
+              className="stat-card" 
+              onClick={() => setAppFilter('applied')}
+              style={{ borderLeft: '3px solid #10b981', cursor: 'pointer', background: appFilter === 'applied' ? 'rgba(16, 185, 129, 0.15)' : 'var(--bg-surface-elevated)' }}
+            >
+              <span className="stat-label" style={{ color: '#10b981' }}>✅ APPLIED (SUCCESS)</span>
+              <span className="stat-value" style={{ color: '#10b981' }}>
+                {matches.filter(m => m.status === 'applied').length}
+              </span>
+            </div>
+            <div 
+              className="stat-card" 
+              onClick={() => setAppFilter('failed')}
+              style={{ borderLeft: '3px solid #f87171', cursor: 'pointer', background: appFilter === 'failed' ? 'rgba(239, 68, 68, 0.15)' : 'var(--bg-surface-elevated)' }}
+            >
+              <span className="stat-label" style={{ color: '#f87171' }}>❌ FAILED / ERROR</span>
+              <span className="stat-value" style={{ color: '#f87171' }}>
+                {matches.filter(m => m.status === 'failed').length}
+              </span>
+            </div>
+            <div 
+              className="stat-card" 
+              onClick={() => setAppFilter('pending')}
+              style={{ borderLeft: '3px solid #f59e0b', cursor: 'pointer', background: appFilter === 'pending' ? 'rgba(245, 158, 11, 0.15)' : 'var(--bg-surface-elevated)' }}
+            >
+              <span className="stat-label" style={{ color: '#f59e0b' }}>⏳ PENDING / QUEUED</span>
+              <span className="stat-value" style={{ color: '#f59e0b' }}>
+                {matches.filter(m => m.status === 'pending' || m.status === 'in_progress' || m.status === 'applying').length}
+              </span>
+            </div>
+            <div 
+              className="stat-card" 
+              onClick={() => setAppFilter('all')}
+              style={{ borderLeft: '3px solid var(--primary)', cursor: 'pointer', background: appFilter === 'all' ? 'rgba(99, 102, 241, 0.15)' : 'var(--bg-surface-elevated)' }}
+            >
+              <span className="stat-label">TOTAL MATCHED</span>
+              <span className="stat-value">{matches.length}</span>
+            </div>
+          </div>
+
+          {/* Match Score Threshold Filter Slider & Status Filter Bar */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', background: 'rgba(15, 23, 42, 0.4)', padding: '0.85rem 1rem', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem' }}>
+              <label style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: 600, minWidth: '210px' }}>
+                🎯 Match Threshold Filter: <strong style={{ color: 'var(--primary)' }}>{matchThreshold}%</strong>
+              </label>
+              <input 
+                type="range" 
+                min="0" 
+                max="90" 
+                step="5" 
+                value={matchThreshold} 
+                onChange={(e) => setMatchThreshold(Number(e.target.value))}
+                style={{ accentColor: 'var(--primary)', cursor: 'pointer', flex: 1 }}
+              />
+              <button className="btn btn-secondary" style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem' }} onClick={handleMatchResume}>
+                Apply Filter
+              </button>
+            </div>
+
+            {/* Status Filter Tab Buttons & Select All Header */}
+            {(() => {
+              const thresholdMatches = matches.filter(m => Number(m.match_percentage || 0) >= matchThreshold);
+              const getStatusMatches = (filterType) => {
+                return thresholdMatches.filter(m => {
+                  if (filterType === 'applied') return m.status === 'applied';
+                  if (filterType === 'failed') return m.status === 'failed';
+                  if (filterType === 'pending') return m.status === 'pending' || m.status === 'in_progress' || m.status === 'applying';
+                  return true;
+                });
+              };
+              const visibleMatches = getStatusMatches(appFilter);
+
+              return (
+                <>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border-color)', paddingTop: '0.6rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <button 
+                        className="btn" 
+                        onClick={() => setAppFilter('all')}
+                        style={{ fontSize: '0.75rem', padding: '0.25rem 0.65rem', background: appFilter === 'all' ? 'var(--primary)' : 'var(--bg-surface)', borderColor: appFilter === 'all' ? 'var(--primary)' : 'var(--border-color)' }}
+                      >
+                        All Applications ({thresholdMatches.length})
+                      </button>
+                      <button 
+                        className="btn" 
+                        onClick={() => setAppFilter('applied')}
+                        style={{ fontSize: '0.75rem', padding: '0.25rem 0.65rem', background: appFilter === 'applied' ? 'rgba(16, 185, 129, 0.2)' : 'var(--bg-surface)', color: appFilter === 'applied' ? '#34d399' : 'var(--text-secondary)', borderColor: appFilter === 'applied' ? '#10b981' : 'var(--border-color)' }}
+                      >
+                        ✅ Applied ({getStatusMatches('applied').length})
+                      </button>
+                      <button 
+                        className="btn" 
+                        onClick={() => setAppFilter('failed')}
+                        style={{ fontSize: '0.75rem', padding: '0.25rem 0.65rem', background: appFilter === 'failed' ? 'rgba(239, 68, 68, 0.2)' : 'var(--bg-surface)', color: appFilter === 'failed' ? '#f87171' : 'var(--text-secondary)', borderColor: appFilter === 'failed' ? '#ef4444' : 'var(--border-color)' }}
+                      >
+                        ❌ Failed ({getStatusMatches('failed').length})
+                      </button>
+                      <button 
+                        className="btn" 
+                        onClick={() => setAppFilter('pending')}
+                        style={{ fontSize: '0.75rem', padding: '0.25rem 0.65rem', background: appFilter === 'pending' ? 'rgba(245, 158, 11, 0.2)' : 'var(--bg-surface)', color: appFilter === 'pending' ? '#fbbf24' : 'var(--text-secondary)', borderColor: appFilter === 'pending' ? '#f59e0b' : 'var(--border-color)' }}
+                      >
+                        ⏳ Pending ({getStatusMatches('pending').length})
+                      </button>
+                    </div>
+
+                    {/* Select All Checkbox Control */}
+                    {visibleMatches.length > 0 && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', userSelect: 'none' }}>
+                          <input 
+                            type="checkbox"
+                            checked={
+                              visibleMatches
+                                .map(m => m.application_id)
+                                .filter(Boolean)
+                                .every(id => selectedMatchIds.has(id)) && visibleMatches.length > 0
+                            }
+                            onChange={() => toggleSelectAllMatches(visibleMatches)}
+                            style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                          />
+                          <strong>Select All Rows ({visibleMatches.length})</strong>
+                        </label>
+                        {selectedMatchIds.size > 0 && (
+                          <span style={{ color: 'var(--primary)', fontWeight: 600 }}>({selectedMatchIds.size} selected)</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </>
+              );
+            })()}
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-            {matches.map((m, idx) => (
-              <div key={idx} className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', padding: '1.25rem', borderLeft: '4px solid var(--primary)' }}>
+            {matches
+              .filter(m => Number(m.match_percentage || 0) >= matchThreshold)
+              .filter(m => {
+                if (appFilter === 'applied') return m.status === 'applied';
+                if (appFilter === 'failed') return m.status === 'failed';
+                if (appFilter === 'pending') return m.status === 'pending' || m.status === 'in_progress' || m.status === 'applying';
+                return true;
+              })
+              .map((m, idx) => (
+              <div key={idx} className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', padding: '1.25rem', borderLeft: `4px solid ${m.status === 'applied' ? '#10b981' : m.status === 'failed' ? '#ef4444' : 'var(--primary)'}`, background: selectedMatchIds.has(m.application_id) ? 'rgba(99, 102, 241, 0.08)' : undefined }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                  <div style={{ display: 'flex', gap: '1.25rem', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+                    {/* Multi-Select Checkbox */}
+                    {m.application_id && (
+                      <input 
+                        type="checkbox"
+                        checked={selectedMatchIds.has(m.application_id)}
+                        onChange={() => toggleMatchSelection(m.application_id)}
+                        style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer', flexShrink: 0 }}
+                      />
+                    )}
+
                     <div className="score-badge" style={{ minWidth: '60px', height: '60px' }}>
                       {m.match_percentage}%
                       <span style={{ display: 'block', fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 500 }}>match</span>
@@ -1205,6 +1898,54 @@ function App() {
               </div>
             )}
           </div>
+
+          {/* Floating Batch Action Bar */}
+          {selectedMatchIds.size > 0 && (
+            <div style={{
+              position: 'sticky',
+              bottom: '1.5rem',
+              zIndex: 100,
+              background: 'rgba(15, 23, 42, 0.95)',
+              backdropFilter: 'blur(12px)',
+              border: '2px solid var(--primary)',
+              borderRadius: '12px',
+              padding: '0.85rem 1.5rem',
+              display: 'flex',
+              justify: 'space-between',
+              alignItems: 'center',
+              boxShadow: '0 10px 25px -5px rgba(99, 102, 241, 0.4)',
+              gap: '1rem'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <span style={{ fontSize: '1.25rem' }}>⚡</span>
+                <div>
+                  <strong style={{ fontSize: '0.9rem', color: '#fff', display: 'block' }}>
+                    {selectedMatchIds.size} Job{selectedMatchIds.size > 1 ? 's' : ''} Selected
+                  </strong>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                    Ready for sequential auto-application pipeline
+                  </span>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                <button 
+                  className="btn btn-secondary" 
+                  style={{ fontSize: '0.78rem', padding: '0.4rem 0.85rem' }}
+                  onClick={() => setSelectedMatchIds(new Set())}
+                >
+                  Clear Selection
+                </button>
+                <button 
+                  className="btn btn-primary" 
+                  disabled={isBatchApplying}
+                  onClick={handleBatchApply}
+                  style={{ fontSize: '0.85rem', padding: '0.45rem 1.1rem', background: 'linear-[#6366f1, #4f46e5]', border: 'none' }}
+                >
+                  {isBatchApplying ? 'Queueing Applications...' : `🚀 Batch Apply (${selectedMatchIds.size})`}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1429,6 +2170,406 @@ function App() {
                   {isApplying && <div className="terminal-line">🤖 Agent working... interacting with the page controls...</div>}
                   <div ref={terminalEndRef} />
                 </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Tab 5: Scheduler & Automation */}
+      {activeTab === "scheduler" && (
+        <div className="scheduler-dashboard">
+          {/* Header & Status Control Bar */}
+          <div className="glass-panel" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+            <div>
+              <h2 className="gradient-text" style={{ fontSize: '1.25rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Clock size={20} />
+                Automated Task Scheduler & Cron Engine
+              </h2>
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+                Schedule recurring background discovery scans across multiple job boards & locations using APScheduler + SQLite Queue.
+              </p>
+            </div>
+            
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Worker Engine:</span>
+                <span className={`badge-status ${schedulerStatus.running ? 'healthy' : 'failed'}`}>
+                  {schedulerStatus.running ? '🟢 RUNNING' : '🔴 STOPPED'}
+                </span>
+              </div>
+
+              {schedulerStatus.running ? (
+                <button className="btn" onClick={handleStopScheduler} style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#f87171', borderColor: 'rgba(239, 68, 68, 0.3)', padding: '0.4rem 0.85rem' }}>
+                  <StopCircle size={14} /> Stop Scheduler
+                </button>
+              ) : (
+                <button className="btn btn-primary" onClick={handleStartScheduler} style={{ padding: '0.4rem 0.85rem' }}>
+                  <PlayCircle size={14} /> Start Scheduler
+                </button>
+              )}
+
+              <button className="btn" onClick={fetchSchedulerData} style={{ padding: '0.4rem 0.85rem' }}>
+                <RefreshCw size={14} /> Sync Status
+              </button>
+            </div>
+          </div>
+
+          {/* Quick Metrics Bar */}
+          <div className="stat-card-row">
+            <div className="stat-card">
+              <div className="stat-card-lbl">Active Schedules</div>
+              <div className="stat-card-val" style={{ color: 'var(--primary)' }}>{schedulesList.length}</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-card-lbl">Pending Tasks</div>
+              <div className="stat-card-val" style={{ color: 'var(--warning)' }}>{schedulerStatus.queue_stats?.pending || 0}</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-card-lbl">Running Tasks</div>
+              <div className="stat-card-val" style={{ color: 'var(--success)' }}>{schedulerStatus.queue_stats?.running || 0}</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-card-lbl">Completed Tasks</div>
+              <div className="stat-card-val" style={{ color: 'var(--text-primary)' }}>{schedulerStatus.queue_stats?.completed || 0}</div>
+            </div>
+          </div>
+
+          {/* Main Grid: Form + Active Schedules List */}
+          <div className="scheduler-grid">
+            {/* Panel 1: Create Schedule */}
+            <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              <h3 style={{ fontSize: '1rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-primary)' }}>
+                <Plus size={16} />
+                Create Discovery Cron Job
+              </h3>
+
+              <form onSubmit={handleCreateSchedule} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                {/* Multi-Platform Chips */}
+                <div className="input-group">
+                  <span className="input-label">Select Target Job Boards</span>
+                  <div className="platform-chips">
+                    {[
+                      { id: 'naukri', label: 'Naukri' },
+                      { id: 'linkedin', label: 'LinkedIn' },
+                      { id: 'indeed', label: 'Indeed (API)', disabled: false },
+                      { id: 'wellfound', label: 'Wellfound (Startup)', disabled: false }
+                    ].map(p => (
+                      <div 
+                        key={p.id}
+                        className={`platform-chip ${scheduleForm.selectedPlatforms.includes(p.id) ? 'selected' : ''} ${p.disabled ? 'disabled' : ''}`}
+                        onClick={() => !p.disabled && handleToggleSchedulePlatform(p.id)}
+                      >
+                        {scheduleForm.selectedPlatforms.includes(p.id) && <Check size={12} style={{ display: 'inline', marginRight: '4px' }} />}
+                        {p.label}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Keyword */}
+                <div className="input-group">
+                  <span className="input-label">Search Keyword / Role</span>
+                  <input 
+                    type="text"
+                    value={scheduleForm.keyword}
+                    onChange={(e) => setScheduleForm({ ...scheduleForm, keyword: e.target.value })}
+                    placeholder="e.g. GenAI Engineer, Python Developer"
+                    className="input-field"
+                    required
+                  />
+                </div>
+
+                {/* Locations (Comma separated) */}
+                <div className="input-group">
+                  <span className="input-label">Locations (Comma-Separated for Multi-Location Scans)</span>
+                  <input 
+                    type="text"
+                    value={scheduleForm.locationsInput}
+                    onChange={(e) => setScheduleForm({ ...scheduleForm, locationsInput: e.target.value })}
+                    placeholder="e.g. Remote, Noida, Bengaluru, Delhi NCR"
+                    className="input-field"
+                  />
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+                    Tip: Enqueues distinct, staggered discovery scans for each location.
+                  </span>
+                </div>
+
+                {/* Cron Presets */}
+                <div className="input-group">
+                  <span className="input-label">Frequency / Schedule Preset</span>
+                  <select 
+                    className="input-field"
+                    value={scheduleForm.preset}
+                    onChange={(e) => setScheduleForm({ ...scheduleForm, preset: e.target.value })}
+                    style={{ background: '#0f131a', color: 'var(--text-primary)' }}
+                  >
+                    <option value="0 9,18 * * 1-5">Twice Daily — 9 AM & 6 PM Weekdays (Recommended)</option>
+                    <option value="0 */6 * * *">Every 6 Hours</option>
+                    <option value="0 9 * * *">Once Daily at 9:00 AM</option>
+                    <option value="*/30 * * * *">Every 30 Minutes (Testing)</option>
+                    <option value="custom">Custom Cron Expression</option>
+                  </select>
+                </div>
+
+                {/* Custom Cron Input */}
+                {scheduleForm.preset === 'custom' && (
+                  <div className="input-group">
+                    <span className="input-label">Custom Cron Expression (min hour day month day-of-week)</span>
+                    <input 
+                      type="text"
+                      value={scheduleForm.customCron}
+                      onChange={(e) => setScheduleForm({ ...scheduleForm, customCron: e.target.value })}
+                      placeholder="e.g. 0 9,18 * * 1-5"
+                      className="input-field"
+                      style={{ fontFamily: 'var(--font-mono)' }}
+                    />
+                  </div>
+                )}
+
+                {/* Max Jobs per Scan Slider */}
+                <div className="input-group">
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span className="input-label">Max Jobs Per Scan:</span>
+                    <span style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--primary)' }}>{scheduleForm.maxJobs} jobs</span>
+                  </div>
+                  <input 
+                    type="range"
+                    min="10"
+                    max="100"
+                    step="5"
+                    value={scheduleForm.maxJobs}
+                    onChange={(e) => setScheduleForm({ ...scheduleForm, maxJobs: e.target.value })}
+                    style={{ width: '100%', accentColor: 'var(--primary)' }}
+                  />
+                </div>
+
+                {/* Auto-Apply Toggle & Min Match Score Slider */}
+                <div style={{ background: 'var(--bg-surface-elevated)', padding: '0.85rem 1rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-primary)' }}>
+                    <input 
+                      type="checkbox" 
+                      checked={scheduleForm.autoApply} 
+                      onChange={(e) => setScheduleForm({ ...scheduleForm, autoApply: e.target.checked })}
+                      style={{ accentColor: 'var(--primary)', width: '16px', height: '16px', cursor: 'pointer' }}
+                    />
+                    <span>⚡ Auto-Apply to High-Match Jobs (Hands-Free)</span>
+                  </label>
+                  
+                  {scheduleForm.autoApply && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', borderTop: '1px solid var(--border-color)', paddingTop: '0.6rem' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem' }}>
+                        <span style={{ color: 'var(--text-secondary)' }}>Minimum Match Cutoff:</span>
+                        <strong style={{ color: 'var(--success)' }}>≥ {scheduleForm.minMatchScore}% Match</strong>
+                      </div>
+                      <input 
+                        type="range"
+                        min="50"
+                        max="90"
+                        step="5"
+                        value={scheduleForm.minMatchScore}
+                        onChange={(e) => setScheduleForm({ ...scheduleForm, minMatchScore: Number(e.target.value) })}
+                        style={{ accentColor: 'var(--success)', cursor: 'pointer' }}
+                      />
+                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                        Discovered jobs matching your resume ≥ {scheduleForm.minMatchScore}% will automatically trigger Playwright auto-apply!
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                <button 
+                  type="submit" 
+                  className="btn btn-primary" 
+                  disabled={isScheduling}
+                  style={{ padding: '0.75rem', marginTop: '0.5rem' }}
+                >
+                  <Calendar size={16} />
+                  {isScheduling ? 'Creating Schedules...' : 'Add Recurring Cron Job'}
+                </button>
+              </form>
+            </div>
+
+            {/* Panel 2: Active Schedules & Rate Limits */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+              <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h3 style={{ fontSize: '1rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-primary)' }}>
+                    <Activity size={16} />
+                    Active Recurring Schedules ({schedulesList.length})
+                  </h3>
+                  {schedulesList.length > 0 && (
+                    <button 
+                      className="btn" 
+                      onClick={handleClearAllSchedules}
+                      style={{ padding: '0.25rem 0.6rem', fontSize: '0.75rem', background: 'rgba(239, 68, 68, 0.1)', color: '#f87171', borderColor: 'rgba(239, 68, 68, 0.3)' }}
+                    >
+                      <Trash2 size={12} /> Clear All
+                    </button>
+                  )}
+                </div>
+
+                {schedulesList.length === 0 ? (
+                  <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                    No recurring schedules currently active. Create one using the form on the left!
+                  </div>
+                ) : (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table className="schedule-table">
+                      <thead>
+                        <tr>
+                          <th>Job ID / Rule</th>
+                          <th>Schedule / Trigger</th>
+                          <th>Next Run</th>
+                          <th>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {schedulesList.map((sch) => (
+                          <tr key={sch.id}>
+                            <td>
+                              <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{sch.name || sch.id}</div>
+                              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{sch.id}</div>
+                            </td>
+                            <td>
+                              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', background: 'var(--bg-surface)', padding: '0.15rem 0.4rem', borderRadius: '4px', border: '1px solid var(--border-color)' }}>
+                                {sch.trigger}
+                              </span>
+                            </td>
+                            <td style={{ fontSize: '0.8rem', color: 'var(--secondary)' }}>
+                              {sch.next_run ? sch.next_run.replace("T", " ").split(".")[0] : 'Pending'}
+                            </td>
+                            <td>
+                              <button 
+                                className="btn"
+                                onClick={() => handleRemoveSchedule(sch.id)}
+                                style={{ padding: '0.25rem 0.5rem', background: 'rgba(239, 68, 68, 0.1)', color: '#f87171', borderColor: 'rgba(239, 68, 68, 0.3)', fontSize: '0.75rem' }}
+                              >
+                                <Trash2 size={12} /> Remove
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* Rate Limits Breakdown */}
+              <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h4 style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <ShieldCheck size={14} /> Platform Rate Limits & Anti-Bot Protection
+                  </h4>
+                  <button 
+                    className="btn"
+                    onClick={handleResetRateLimits}
+                    style={{ padding: '0.2rem 0.5rem', fontSize: '0.7rem' }}
+                  >
+                    <RefreshCw size={10} /> Reset Counters
+                  </button>
+                </div>
+                {Object.keys(rateLimitStats).length === 0 ? (
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    Loading platform rate limits...
+                  </div>
+                ) : (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '0.75rem' }}>
+                    {Object.entries(rateLimitStats).map(([plat, stat]) => (
+                      <div key={plat} style={{ background: 'var(--bg-surface-elevated)', padding: '0.6rem 0.8rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-color)' }}>
+                        <div style={{ fontWeight: 700, textTransform: 'capitalize', fontSize: '0.8rem' }}>{plat}</div>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.1rem' }}>
+                          Hourly: {stat.hourly || '0/5'}
+                        </div>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                          Daily: {stat.daily || '0/20'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Bottom Panel: Queue Execution Monitor */}
+          <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ fontSize: '1rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-primary)' }}>
+                <Activity size={16} />
+                Task Queue Execution History ({schedulerTasks.length})
+              </h3>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button 
+                  className="btn" 
+                  onClick={handleClearTaskHistory}
+                  style={{ padding: '0.25rem 0.6rem', fontSize: '0.75rem', background: 'rgba(239, 68, 68, 0.1)', color: '#f87171', borderColor: 'rgba(239, 68, 68, 0.3)' }}
+                >
+                  <Trash2 size={12} /> Clear History
+                </button>
+                <button className="btn" onClick={fetchSchedulerData} style={{ padding: '0.25rem 0.6rem', fontSize: '0.75rem' }}>
+                  <RefreshCw size={12} /> Refresh Queue
+                </button>
+              </div>
+            </div>
+
+            {schedulerTasks.length === 0 ? (
+              <div style={{ padding: '1.5rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                No tasks currently in the queue. Tasks automatically appear when triggered by cron schedules or manual actions.
+              </div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="schedule-table">
+                  <thead>
+                    <tr>
+                      <th>Task ID</th>
+                      <th>Type</th>
+                      <th>Priority</th>
+                      <th>Status</th>
+                      <th>Scheduled At / Created</th>
+                      <th>Retries</th>
+                      <th>Details / Errors</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {schedulerTasks.map((t) => (
+                      <tr key={t.id}>
+                        <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>#{t.id}</td>
+                        <td style={{ textTransform: 'capitalize', fontWeight: 600 }}>{t.task_type.replace('_', ' ')}</td>
+                        <td>
+                          <span style={{ fontSize: '0.75rem', textTransform: 'uppercase', color: t.priority === 'urgent' ? 'var(--error)' : 'var(--text-muted)' }}>
+                            {t.priority}
+                          </span>
+                        </td>
+                        <td>
+                          <span className={`badge-status ${t.status}`}>
+                            {t.status}
+                          </span>
+                        </td>
+                        <td style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                          {t.scheduled_at ? t.scheduled_at.replace("T", " ").split(".")[0] : t.created_at?.replace("T", " ").split(".")[0]}
+                        </td>
+                        <td style={{ fontFamily: 'var(--font-mono)' }}>{t.retry_count}</td>
+                        <td style={{ fontSize: '0.75rem', color: t.error ? 'var(--error)' : 'var(--text-muted)', maxWidth: '250px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {t.error || 'Clean execution'}
+                        </td>
+                        <td>
+                          {(t.status === 'pending' || t.status === 'running') && (
+                            <button 
+                              className="btn"
+                              onClick={() => handleCancelTask(t.id)}
+                              style={{ padding: '0.2rem 0.4rem', fontSize: '0.7rem', background: 'rgba(239, 68, 68, 0.1)', color: '#f87171' }}
+                            >
+                              <XCircle size={10} /> Cancel
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>

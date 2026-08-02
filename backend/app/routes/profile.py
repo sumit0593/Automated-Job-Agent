@@ -25,13 +25,21 @@ def get_user_profile(db: Session = Depends(get_db)):
         "id": profile.id,
         "name": profile.name,
         "email": profile.email,
+        "country_code": getattr(profile, "country_code", "+91") or "+91",
         "phone": profile.phone,
+        "pan_number": getattr(profile, "pan_number", "") or "",
+        "date_of_birth": getattr(profile, "date_of_birth", "") or "",
+        "last_working_day": getattr(profile, "last_working_day", "") or "",
         "experience_years": profile.experience_years,
         "current_ctc": profile.current_ctc,
         "expected_ctc": profile.expected_ctc,
         "notice_period": profile.notice_period,
         "current_location": profile.current_location,
-        "preferred_locations": profile.preferred_locations or ["Noida", "Delhi", "Gurgaon", "Remote"],
+        "preferred_locations": profile.preferred_locations or [],
+        "skills": getattr(profile, "skills", []) or [],
+        "linkedin_url": getattr(profile, "linkedin_url", "") or "",
+        "github_url": getattr(profile, "github_url", "") or "",
+        "portfolio_url": getattr(profile, "portfolio_url", "") or "",
         "work_authorization": profile.work_authorization,
         "willing_to_relocate": profile.willing_to_relocate,
         "remote_preference": profile.remote_preference
@@ -45,9 +53,11 @@ def update_user_profile(data: Dict[str, Any], db: Session = Depends(get_db)):
         profile = UserProfile()
         db.add(profile)
 
-    for field in ["name", "email", "phone", "experience_years", "current_ctc", "expected_ctc", 
-                  "notice_period", "current_location", "preferred_locations", 
-                  "work_authorization", "willing_to_relocate", "remote_preference"]:
+    for field in ["name", "email", "country_code", "phone", "pan_number", "date_of_birth",
+                  "last_working_day", "experience_years", "current_ctc", "expected_ctc", 
+                  "notice_period", "current_location", "preferred_locations", "skills",
+                  "linkedin_url", "github_url", "portfolio_url", "work_authorization",
+                  "willing_to_relocate", "remote_preference"]:
         if field in data:
             setattr(profile, field, data[field])
 
@@ -134,3 +144,44 @@ def export_full_profile(db: Session = Depends(get_db)):
         "preferences": preferences,
         "answers": answers["answers"]
     }
+
+@router.post("/clear")
+def clear_user_profile_and_answer_bank(db: Session = Depends(get_db)):
+    """
+    Safely resets/clears Candidate Profile (UserProfile) and Answer Bank (AnswerBank) records.
+    """
+    try:
+        profile = db.query(UserProfile).first()
+        if profile:
+            profile.name = ""
+            profile.email = ""
+            profile.country_code = "+91"
+            profile.phone = ""
+            profile.pan_number = ""
+            profile.date_of_birth = ""
+            profile.last_working_day = ""
+            profile.experience_years = 0.0
+            profile.current_ctc = ""
+            profile.expected_ctc = ""
+            profile.notice_period = ""
+            profile.current_location = ""
+            profile.preferred_locations = []
+            profile.skills = []
+            profile.linkedin_url = ""
+            profile.github_url = ""
+            profile.portfolio_url = ""
+            profile.work_authorization = ""
+            profile.willing_to_relocate = ""
+            profile.remote_preference = ""
+
+        db.query(AnswerBank).delete()
+        db.commit()
+
+        return {
+            "success": True,
+            "message": "Candidate Profile and Answer Bank cleared successfully."
+        }
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error clearing profile: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to clear profile: {e}")

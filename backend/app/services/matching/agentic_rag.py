@@ -1,4 +1,5 @@
 import time
+import hashlib
 import logging
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
@@ -18,11 +19,16 @@ from backend.app.services.matching.evaluator import compute_rag_metrics
 
 logger = logging.getLogger("uvicorn.error")
 
+from backend.app.services.cache_service import enterprise_cache
+
+ALGORITHM_VERSION = "agentic_rag_v1.2"
+
 class AgenticRAGEngine:
     """
     Production Agentic RAG Pipeline for Job Matching.
-    Integrates HyDE, Hybrid Search, Self-RAG/CRAG Corrective Loops,
-    Cross-Encoder Reranking, MMR Deduplication, and Grounded Explanations.
+    Integrates Sub-Millisecond Redis Hot Cache, Database Cold Cache,
+    Decoupled Embedding Hashes, SETNX Stampede Lock Protection,
+    HyDE, Cross-Encoder Reranking, MMR Deduplication, and Grounded Explanations.
     """
     def __init__(self, confidence_threshold: float = 60.0, max_retries: int = 3):
         self.confidence_threshold = confidence_threshold
@@ -32,7 +38,7 @@ class AgenticRAGEngine:
         self,
         resume: models.Resume,
         db: Session,
-        limit: int = 10,
+        limit: int = 20,
         min_score: float = 50.0
     ) -> Dict[str, Any]:
         start_time = time.time()
@@ -43,166 +49,199 @@ class AgenticRAGEngine:
         experience = resume.parsed_experience or 0.0
         location = resume.parsed_location or "Unknown"
 
-        logger.info(f"AgenticRAG: Initiating matching pipeline for Resume {resume_id} (min_score: {min_score}%)...")
+        # Decoupled Hashing
+        resume_hash = enterprise_cache.compute_resume_hash(raw_text)
+        resume_emb_hash = enterprise_cache.compute_resume_embedding_hash(raw_text, skills, experience)
+
+        logger.info(f"AgenticRAG: Initiating matching pipeline for Resume #{resume_id} (min_score: {min_score}%)...")
         
-        # 1. LLM Query Enhancement & Intent Classification
-        query_intent = classify_query_intent(raw_text)
-        hyde_doc = generate_hyde_doc(raw_text, skills)
-        query_branches = decompose_query(raw_text, skills)
-        
-        # 2. Corrective RAG (CRAG) Retrieval Loop
-        retrieved_candidates = []
+        # 1. Hierarchical Hot/Cold Cache Lookup
+        all_db_jobs = db.query(models.Job).all()
+        cached_matches_map = {}
+        uncached_job_ids = set()
+
+        for job in all_db_jobs:
+            j_hash = enterprise_cache.compute_job_hash(job.title, job.company, job.description)
+            
+            # Check Tier 1 (Redis Hot) & Tier 2 (DB Cold)
+            match_payload, hit_type = enterprise_cache.get_match_result(
+                resume_id=resume_id,
+                job_id=job.id,
+                resume_hash=resume_hash,
+                resume_emb_hash=resume_emb_hash,
+                job_hash=j_hash,
+                db=db
+            )
+
+            if hit_type in ["redis_hot", "db_cold"]:
+                cached_matches_map[job.id] = (job, match_payload)
+            else:
+                uncached_job_ids.add(job.id)
+
+        cache_hit_count = len(cached_matches_map)
+        logger.info(f"AgenticRAG Cache Status: {cache_hit_count} HIT(s), {len(uncached_job_ids)} MISS(es) out of {len(all_db_jobs)} total DB jobs.")
+
+        newly_computed_matches = []
+        query_intent = "Direct Semantic Search"
+        hyde_doc = ""
         retrieval_attempts = 0
-        confidence = 0.0
+        confidence = 100.0 if cache_hit_count > 0 else 0.0
 
-        for attempt in range(1, self.max_retries + 1):
-            retrieval_attempts = attempt
-            logger.info(f"AgenticRAG: Executing Retrieval Attempt {attempt}/{self.max_retries}...")
+        # 2. Run Heavy AI Matching ONLY for Uncached Jobs
+        if uncached_job_ids:
+            logger.info(f"AgenticRAG: Executing AI RAG pipeline for {len(uncached_job_ids)} uncached job(s)...")
+            query_intent = classify_query_intent(raw_text)
+            hyde_doc = generate_hyde_doc(raw_text, skills)
+            query_branches = decompose_query(raw_text, skills)
             
-            if attempt == 1:
-                # Primary Dense + Hybrid Search using raw resume + skills
-                candidates = vector_store.search_similar_jobs(
-                    resume_text=raw_text,
-                    resume_skills=skills,
-                    limit=100
-                )
-            elif attempt == 2:
-                # Corrective Retry 1: HyDE Hypothetical Job Description Search
-                logger.info("CRAG: Confidence low on Attempt 1. Retrying with HyDE Query...")
-                candidates = vector_store.search_similar_jobs(
-                    resume_text=hyde_doc,
-                    resume_skills=skills,
-                    limit=100
-                )
-            else:
-                # Corrective Retry 2: Multi-query ensemble search
-                logger.info("CRAG: Retrying with Multi-query branch ensemble...")
-                cand_map = {}
-                for q_branch in query_branches:
-                    q_res = vector_store.search_similar_jobs(
-                        resume_text=q_branch,
-                        resume_skills=skills,
-                        limit=100
-                    )
-                    for item in q_res:
-                        cand_map[item["job_id"]] = item
-                candidates = list(cand_map.values())
+            retrieved_candidates = []
+            for attempt in range(1, self.max_retries + 1):
+                retrieval_attempts = attempt
+                if attempt == 1:
+                    candidates = vector_store.search_similar_jobs(resume_text=raw_text, resume_skills=skills, limit=100)
+                elif attempt == 2:
+                    candidates = vector_store.search_similar_jobs(resume_text=hyde_doc, resume_skills=skills, limit=100)
+                else:
+                    cand_map = {}
+                    for q_branch in query_branches:
+                        q_res = vector_store.search_similar_jobs(resume_text=q_branch, resume_skills=skills, limit=100)
+                        for item in q_res:
+                            cand_map[item["job_id"]] = item
+                    candidates = list(cand_map.values())
 
-            # Evaluate confidence of retrieved candidate pool
-            if candidates:
-                top_scores = [c.get("hybrid_score", 0.5) * 100.0 for c in candidates[:5]]
-                confidence = sum(top_scores) / len(top_scores)
-            else:
-                confidence = 0.0
+                if candidates:
+                    top_scores = [c.get("hybrid_score", 0.5) * 100.0 for c in candidates[:5]]
+                    confidence = sum(top_scores) / len(top_scores)
+                else:
+                    confidence = 0.0
 
-            logger.info(f"AgenticRAG Attempt {attempt}: Retrieval confidence score = {confidence:.1f}%")
+                if confidence >= self.confidence_threshold or attempt == self.max_retries:
+                    retrieved_candidates = candidates
+                    break
+
+            # Filter candidates to only uncached jobs
+            uncached_candidates = [c for c in retrieved_candidates if c["job_id"] in uncached_job_ids]
             
-            if confidence >= self.confidence_threshold or attempt == self.max_retries:
-                retrieved_candidates = candidates
-                break
+            # Fallback if vector store yields no uncached candidates
+            if not uncached_candidates and uncached_job_ids:
+                for j_id in uncached_job_ids:
+                    uncached_candidates.append({
+                        "job_id": j_id,
+                        "dense_score": 0.5,
+                        "overlap_score": 0.5,
+                        "hybrid_score": 0.5
+                    })
 
-        # Fallback to database jobs if vector store yields no points
-        if not retrieved_candidates:
-            logger.warning("AgenticRAG: Vector store empty or unreachable. Fetching candidates from SQLite DB.")
-            db_jobs = db.query(models.Job).all()
-            for j in db_jobs:
-                retrieved_candidates.append({
-                    "job_id": j.id,
-                    "title": j.title,
-                    "company": j.company,
-                    "dense_score": 0.5,
-                    "overlap_score": 0.5,
-                    "hybrid_score": 0.5
+            # Compute Sub-Scores & BGE Reranking for uncached jobs
+            candidates_to_rerank = []
+            job_map = {}
+            for cand in uncached_candidates:
+                job = db.query(models.Job).filter(models.Job.id == cand["job_id"]).first()
+                if not job:
+                    continue
+
+                job_map[job.id] = job
+                job_skills = job.skills_required or []
+                job_exp = job.experience_required or 0.0
+                
+                skill_score = compute_skill_overlap_score(skills, job_skills)
+                exp_score = compute_experience_match_score(experience, job_exp)
+                loc_score = compute_location_match_score(location, job.location or "")
+                semantic_score = round(cand.get("dense_score", 0.5) * 100.0, 1)
+
+                combined_score = (
+                    (semantic_score * 0.40) +
+                    (skill_score * 0.35) +
+                    (exp_score * 0.15) +
+                    (loc_score * 0.10)
+                )
+
+                candidates_to_rerank.append({
+                    "job_id": job.id,
+                    "title": job.title,
+                    "company": job.company,
+                    "description": job.description,
+                    "location": job.location or "Unknown",
+                    "skills_required": job_skills,
+                    "experience_required": job_exp,
+                    "dense_score": cand.get("dense_score", 0.5),
+                    "sub_scores": {
+                        "overall_score": combined_score,
+                        "skill_score": skill_score,
+                        "exp_score": exp_score,
+                        "loc_score": loc_score,
+                        "semantic_score": semantic_score
+                    },
+                    "combined_score": combined_score
                 })
 
-        # 3. Fetch Full Descriptions & Compute Structured Sub-Scores
-        candidates_to_rerank = []
-        job_map = {}
-        for cand in retrieved_candidates:
-            job = db.query(models.Job).filter(models.Job.id == cand["job_id"]).first()
-            if not job:
-                continue
+            if candidates_to_rerank:
+                reranked = vector_store.rerank_jobs(
+                    resume_text=raw_text,
+                    jobs=candidates_to_rerank,
+                    limit=len(candidates_to_rerank)
+                )
+                for item in reranked:
+                    match_pct = float(item.get("match_percentage", 75))
+                    sub = item["sub_scores"]
+                    final_score = (
+                        (match_pct * 0.45) +
+                        (sub["semantic_score"] * 0.25) +
+                        (sub["skill_score"] * 0.20) +
+                        (sub["exp_score"] * 0.10)
+                    )
+                    sub["overall_score"] = round(min(100.0, max(15.0, final_score)), 1)
+                    item["combined_score"] = sub["overall_score"]
 
-            job_map[job.id] = job
-            job_skills = job.skills_required or []
-            job_exp = job.experience_required or 0.0
-            
-            # Compute granular sub-scores
-            skill_score = compute_skill_overlap_score(skills, job_skills)
-            exp_score = compute_experience_match_score(experience, job_exp)
-            loc_score = compute_location_match_score(location, job.location or "")
-            semantic_score = round(cand.get("dense_score", 0.5) * 100.0, 1)
+                    # Store newly computed match in Hot & Cold Caches
+                    job_obj = job_map[item["job_id"]]
+                    j_hash = enterprise_cache.compute_job_hash(job_obj.title, job_obj.company, job_obj.description)
+                    explanation = generate_match_explanation(
+                        candidate_skills=skills,
+                        candidate_exp=experience,
+                        candidate_loc=location,
+                        job_title=job_obj.title,
+                        job_company=job_obj.company,
+                        job_description=job_obj.description,
+                        job_skills=job_obj.skills_required or [],
+                        sub_scores=sub
+                    )
 
-            # Combined weighted score before Cross-Encoder
-            combined_score = (
-                (semantic_score * 0.40) +
-                (skill_score * 0.35) +
-                (exp_score * 0.15) +
-                (loc_score * 0.10)
-            )
+                    match_payload = {
+                        "match_percentage": sub["overall_score"],
+                        "skill_score": sub["skill_score"],
+                        "exp_score": sub["exp_score"],
+                        "semantic_score": sub["semantic_score"],
+                        "loc_score": sub["loc_score"],
+                        "matching_skills": explanation["matching_skills"],
+                        "missing_skills": explanation["missing_skills"],
+                        "why_selected": explanation["why_selected"],
+                        "resume_improvements": explanation["resume_improvements"],
+                        "pipeline_meta": {"confidence": confidence}
+                    }
 
-            candidates_to_rerank.append({
-                "job_id": job.id,
-                "title": job.title,
-                "company": job.company,
-                "description": job.description,
-                "location": job.location or "Unknown",
-                "skills_required": job_skills,
-                "experience_required": job_exp,
-                "dense_score": cand.get("dense_score", 0.5),
-                "overlap_score": cand.get("overlap_score", 0.5),
-                "hybrid_score": cand.get("hybrid_score", 0.5),
-                "sub_scores": {
-                    "overall_score": combined_score,
-                    "skill_score": skill_score,
-                    "exp_score": exp_score,
-                    "loc_score": loc_score,
-                    "semantic_score": semantic_score
-                },
-                "combined_score": combined_score
-            })
+                    # Enterprise Cache Save (Redis Hot + DB Cold)
+                    enterprise_cache.set_match_result(
+                        resume_id=resume_id,
+                        job_id=job_obj.id,
+                        resume_hash=resume_hash,
+                        resume_emb_hash=resume_emb_hash,
+                        job_hash=j_hash,
+                        payload=match_payload,
+                        db=db
+                    )
 
-        # 4. Cross-Encoder Reranking
-        logger.info(f"AgenticRAG: Reranking {len(candidates_to_rerank)} candidates with BGE Cross-Encoder...")
-        reranked_results = vector_store.rerank_jobs(
-            resume_text=raw_text,
-            jobs=candidates_to_rerank,
-            limit=len(candidates_to_rerank)
-        )
+                    cached_matches_map[job_obj.id] = (job_obj, match_payload)
 
-        # Update combined score with rerank probability and sub-scores
-        for item in reranked_results:
-            match_pct = float(item.get("match_percentage", 75))
-            sub = item["sub_scores"]
-            
-            # Dynamic weighted score combining Cross-Encoder, Semantic Cosine, Skill Match, and Experience
-            final_score = (
-                (match_pct * 0.45) +
-                (sub["semantic_score"] * 0.25) +
-                (sub["skill_score"] * 0.20) +
-                (sub["exp_score"] * 0.10)
-            )
-            sub["overall_score"] = round(min(100.0, max(15.0, final_score)), 1)
-            item["combined_score"] = sub["overall_score"]
-
-        # Sort candidate pool by final combined score
-        reranked_results.sort(key=lambda x: x["combined_score"], reverse=True)
-
-        # Filter results strictly by min_score threshold
-        filtered_results = [r for r in reranked_results if r["combined_score"] >= min_score]
-
-        # 5. Maximum Marginal Relevance (MMR) Deduplication
-        deduplicated_results = apply_mmr(filtered_results, lambda_param=0.75, limit=limit)
-
-        # 6. Generate Grounded Match Explanations
+        # 3. Assemble Final Matches from Hierarchical Hot/Cold Cache
         final_matches = []
         scores_for_eval = []
 
-        for cand in deduplicated_results:
-            job_obj = job_map[cand["job_id"]]
-            sub = cand["sub_scores"]
+        for job_id, (job_obj, cache_payload) in cached_matches_map.items():
+            match_score = cache_payload["match_percentage"]
+            if match_score < min_score:
+                continue
 
-            # Determine application type
             app_type = "Unknown"
             url_l = (job_obj.url or "").lower()
             ats_domains = ["greenhouse.io", "lever.co", "myworkdayjobs.com", "ashbyhq.com", "icims.com", "smartrecruiters.com", "oraclecloud.com", "taleo.net", "bamboohr.com"]
@@ -213,20 +252,6 @@ class AgenticRAGEngine:
             else:
                 app_type = "External Website"
 
-            explanation = generate_match_explanation(
-                candidate_skills=skills,
-                candidate_exp=experience,
-                candidate_loc=location,
-                job_title=job_obj.title,
-                job_company=job_obj.company,
-                job_description=job_obj.description,
-                job_skills=job_obj.skills_required or [],
-                sub_scores=sub
-            )
-
-            scores_for_eval.append(sub["overall_score"])
-
-            # Formatted created date
             created_str = ""
             if hasattr(job_obj, "created_at") and job_obj.created_at:
                 try:
@@ -234,8 +259,36 @@ class AgenticRAGEngine:
                 except Exception:
                     created_str = str(job_obj.created_at)
 
+            # Ensure Application record exists in DB
+            existing_app = db.query(models.Application).filter(
+                models.Application.resume_id == resume_id,
+                models.Application.job_id == job_obj.id
+            ).first()
+
+            if not existing_app:
+                new_app = models.Application(
+                    resume_id=resume_id,
+                    job_id=job_obj.id,
+                    status="matched",
+                    match_score=match_score,
+                    ats_type=app_type,
+                    application_type=app_type
+                )
+                db.add(new_app)
+                db.commit()
+                db.refresh(new_app)
+                app_id = new_app.id
+                app_status = new_app.status
+            else:
+                app_id = existing_app.id
+                app_status = existing_app.status
+
+            scores_for_eval.append(match_score)
+
             final_matches.append({
-                "job_id": cand["job_id"],
+                "job_id": job_obj.id,
+                "application_id": app_id,
+                "status": app_status,
                 "title": job_obj.title,
                 "company": job_obj.company,
                 "location": job_obj.location or "Remote",
@@ -243,40 +296,54 @@ class AgenticRAGEngine:
                 "created_at": created_str,
                 "description": job_obj.description or "",
                 "skills_required": job_obj.skills_required or [],
-                "match_percentage": int(sub["overall_score"]),
+                "match_percentage": int(round(match_score)),
                 "application_type": app_type,
                 "sub_scores": {
-                    "skill_match_pct": int(sub["skill_score"]),
-                    "experience_match_pct": int(sub["exp_score"]),
-                    "semantic_similarity_pct": int(sub["semantic_score"]),
-                    "location_match_pct": int(sub["loc_score"])
+                    "skill_match_pct": int(round(cache_payload.get("skill_score", 0))),
+                    "experience_match_pct": int(round(cache_payload.get("exp_score", 0))),
+                    "semantic_similarity_pct": int(round(cache_payload.get("semantic_score", 0))),
+                    "location_match_pct": int(round(cache_payload.get("loc_score", 0)))
                 },
-                "matching_skills": explanation["matching_skills"],
-                "missing_skills": explanation["missing_skills"],
-                "why_selected": explanation["why_selected"],
-                "resume_improvements": explanation["resume_improvements"]
+                "matching_skills": cache_payload.get("matching_skills", []),
+                "missing_skills": cache_payload.get("missing_skills", []),
+                "why_selected": cache_payload.get("why_selected", ""),
+                "resume_improvements": cache_payload.get("resume_improvements", "")
             })
 
-        # 7. Compute RAG Telemetry & Observability Metrics
+        # Sort matches by match percentage descending
+        final_matches.sort(key=lambda x: x["match_percentage"], reverse=True)
+
+        # 4. Maximum Marginal Relevance (MMR) Deduplication
+        deduplicated_results = apply_mmr(final_matches, lambda_param=0.75, limit=limit)
+
         latency_ms = (time.time() - start_time) * 1000.0
         rag_metrics = compute_rag_metrics(
             retrieved_scores=scores_for_eval,
             latency_ms=latency_ms,
-            retrieval_attempts=retrieval_attempts
+            retrieval_attempts=max(1, retrieval_attempts)
         )
 
-        logger.info(f"AgenticRAG: Pipeline finished in {latency_ms:.1f}ms. Returned {len(final_matches)} ranked jobs.")
-        
+        cache_metrics = enterprise_cache.get_metrics_summary()
+
+        logger.info(
+            f"AgenticRAG: Cache-First Matching finished in {latency_ms:.1f}ms "
+            f"({cache_hit_count} cached, {len(uncached_job_ids)} new). Returned {len(deduplicated_results)} ranked matches."
+        )
+
         return {
-            "matches": final_matches,
+            "matches": deduplicated_results,
             "pipeline_meta": {
                 "intent": query_intent,
                 "hyde_generated": bool(hyde_doc),
                 "retrieval_attempts": retrieval_attempts,
                 "confidence_score": round(confidence, 1),
+                "cache_hit_count": cache_hit_count,
+                "newly_computed_count": len(uncached_job_ids),
+                "cache_metrics": cache_metrics,
                 "rag_metrics": rag_metrics
             }
         }
 
 # Global engine instance
 agentic_rag = AgenticRAGEngine()
+

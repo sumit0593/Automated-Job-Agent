@@ -1,0 +1,23 @@
+name: Job Discovery Cron Trigger
+
+on:
+  schedule:
+    # Runs at 03:30 and 12:30 UTC every weekday (9:00 AM & 6:00 PM IST)
+    - cron: '30 3,12 * * 1-5'
+  workflow_dispatch: # Allows manual trigger from GitHub UI
+
+jobs:
+  trigger-job-discovery:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Trigger Remote Agent Discovery Scan
+        run: |
+          echo "Triggering automated discovery scan..."
+          # Replace YOUR_SERVER_URL with your deployed backend server URL or ngrok endpoint
+          # curl -X POST "${{ secrets.AGENT_SERVER_URL }}/api/schedule/discovery" \
+          #   -H "Content-Type: application/json" \
+          #   -d '{"platform":"naukri","keyword":"GenAI Engineer","location":"Remote","cron_expression":"0 9,18 * * 1-5","max_jobs":25}'
+          echo "GitHub Actions Cron trigger fired successfully."

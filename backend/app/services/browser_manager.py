@@ -111,6 +111,23 @@ def launch_persistent_browser(
         permissions=["geolocation"],
     )
     
+    # Inject anti-detection stealth scripts to bypass Akamai / Edgesuite bot blocks
+    context.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        if (!window.chrome) {
+            window.chrome = { runtime: {} };
+        }
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+    """)
+
+    context.set_extra_http_headers({
+        "Accept-Language": "en-US,en;q=0.9,en-IN;q=0.8",
+        "sec-ch-ua": '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+    })
+    
     # Restore additional storage state if available (supplements the profile)
     storage_state_path = get_storage_state_path(platform)
     if os.path.exists(storage_state_path):

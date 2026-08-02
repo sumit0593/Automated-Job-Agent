@@ -85,18 +85,26 @@ class UserProfile(Base):
     __tablename__ = "user_profiles"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, default="Sumit Kumar")
-    email = Column(String, default="sumit@gmail.com")
-    phone = Column(String, default="+91 7011676185")
-    experience_years = Column(Float, default=3.0)
-    current_ctc = Column(String, default="₹5 LPA")
-    expected_ctc = Column(String, default="₹8 LPA")
-    notice_period = Column(String, default="Immediate")
-    current_location = Column(String, default="Noida")
-    preferred_locations = Column(JSON, default=["Noida", "Delhi", "Gurgaon", "Remote"])
-    work_authorization = Column(String, default="India")
-    willing_to_relocate = Column(String, default="Yes")
-    remote_preference = Column(String, default="Hybrid")
+    name = Column(String, default="")
+    email = Column(String, default="")
+    country_code = Column(String, default="+91")
+    phone = Column(String, default="")
+    pan_number = Column(String, default="")
+    date_of_birth = Column(String, default="")
+    last_working_day = Column(String, default="")
+    experience_years = Column(Float, default=0.0)
+    current_ctc = Column(String, default="")
+    expected_ctc = Column(String, default="")
+    notice_period = Column(String, default="")
+    current_location = Column(String, default="")
+    preferred_locations = Column(JSON, default=list)
+    skills = Column(JSON, default=list)
+    linkedin_url = Column(String, default="")
+    github_url = Column(String, default="")
+    portfolio_url = Column(String, default="")
+    work_authorization = Column(String, default="")
+    willing_to_relocate = Column(String, default="")
+    remote_preference = Column(String, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -120,4 +128,46 @@ class AnswerBank(Base):
     category = Column(String, default="general")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+from sqlalchemy import UniqueConstraint
+
+class MatchResultCache(Base):
+    __tablename__ = "match_result_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, default=1, index=True)
+    resume_id = Column(Integer, ForeignKey("resumes.id", ondelete="CASCADE"), nullable=False, index=True)
+    job_id = Column(Integer, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    # Decoupled Versioning & Cache Invalidation Hashes
+    resume_hash = Column(String, index=True)
+    resume_embedding_hash = Column(String, index=True)
+    job_hash = Column(String, index=True)
+    embedding_version = Column(String, default="bge-m3-v1")
+    reranker_version = Column(String, default="bge-reranker-v1")
+    pipeline_version = Column(String, default="agentic-rag-v1.2")
+    algorithm_version = Column(String, default="agentic_rag_v1.2")
+    
+    # Match Scores
+    match_percentage = Column(Float, nullable=False)
+    skill_score = Column(Float, default=0.0)
+    exp_score = Column(Float, default=0.0)
+    semantic_score = Column(Float, default=0.0)
+    loc_score = Column(Float, default=0.0)
+    
+    # Explanations & Diagnostics
+    matching_skills = Column(JSON, default=list)
+    missing_skills = Column(JSON, default=list)
+    why_selected = Column(Text, nullable=True)
+    resume_improvements = Column(Text, nullable=True)
+    pipeline_meta = Column(JSON, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint('resume_id', 'job_id', name='uix_resume_job_match'),
+    )
+
 

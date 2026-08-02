@@ -219,23 +219,57 @@ class NaukriPortalPlugin(BasePortal):
             logger.info(msg)
             logs.append(msg)
 
+        # Force HTTPS scheme
+        if apply_url.startswith("http://"):
+            apply_url = "https://" + apply_url[7:]
+
         log(f"NaukriPortalPlugin: Loading job posting {apply_url}...")
         try:
             page.goto(apply_url, timeout=30000, wait_until="domcontentloaded")
-            page.wait_for_timeout(3000)
+            page.wait_for_timeout(2000)
+
+            # Check if Akamai / Edgesuite bot protection threw Access Denied on direct link
+            if "access denied" in page.title().lower() or page.locator("h1:has-text('Access Denied')").count() > 0:
+                log("NaukriPortalPlugin: Akamai Access Denied on direct URL. Recovering via homepage session...")
+                page.goto("https://www.naukri.com", timeout=20000, wait_until="domcontentloaded")
+                page.wait_for_timeout(2000)
+                page.goto(apply_url, timeout=30000, wait_until="domcontentloaded")
+                page.wait_for_timeout(3000)
+
             client.dismiss_popups()
+
+            # Check if job is already applied on user's Naukri profile
+            already_applied_selectors = [
+                "button:has-text('Applied')", "span:has-text('Applied')",
+                ":text('Already Applied')", "[class*='already-applied']", ".already-applied"
+            ]
+            for sel in already_applied_selectors:
+                el = page.locator(sel)
+                if el.count() > 0 and el.first.is_visible():
+                    log("✅ NaukriPortalPlugin: Job is already applied on user's Naukri profile!")
+                    client.capture_state_screenshot("naukri_already_applied")
+                    return {"success": True, "already_applied": True, "logs": "\n".join(logs) + "\nAlready applied on Naukri profile."}
 
             # Detect Apply Buttons
             apply_selectors = [
-                "#apply-button", "button[id*='apply']", "button[class*='apply']", 
-                "button:has-text('Apply')", "button:has-text('Apply Now')"
+                "#apply-button", "button.apply-button", ".apply-button-header",
+                "[class*='applyButton']", "[class*='apply-button']", "[class*='applyBtn']",
+                "[class*='apply-btn']", "button[id*='apply']", "button[class*='apply']", 
+                "button:has-text('Apply')", "button:has-text('Apply Now')",
+                "button:has-text('Apply on site')", "button:has-text('Apply on company site')",
+                "a:has-text('Apply on company site')", "a:has-text('Apply')", ".apply-container button"
             ]
 
             clicked_apply = False
             for selector in apply_selectors:
                 btn = page.locator(selector)
                 if btn.count() > 0 and btn.first.is_visible():
-                    log(f"NaukriPortalPlugin: Found apply button: {selector}")
+                    btn_text = (btn.first.inner_text() or "").strip()
+                    if "applied" in btn_text.lower():
+                        log("✅ NaukriPortalPlugin: Job is already applied on user's Naukri profile!")
+                        return {"success": True, "already_applied": True, "logs": "\n".join(logs) + "\nAlready applied on Naukri profile."}
+
+                    log(f"NaukriPortalPlugin: Found apply button ({selector}): '{btn_text}'")
                     
                     # Try to detect if this opens a pop-up tab redirecting to an external site
                     new_page = client.check_for_new_tab(lambda: btn.first.click())
@@ -257,6 +291,30 @@ class NaukriPortalPlugin(BasePortal):
             if clicked_apply:
                 page.wait_for_timeout(3000)
                 client.dismiss_popups()
+
+                # Check if in-page login modal appeared
+                login_user = page.locator("#usernameField, input[placeholder*='Username'], input[name='email']")
+                if login_user.count() > 0 and login_user.first.is_visible():
+                    log("NaukriPortalPlugin: In-page login popup detected. Auto-authenticating...")
+                    try:
+                        from backend.app.database import SessionLocal
+                        from backend.app import models
+                        db = SessionLocal()
+                        cred = db.query(models.UserCredential).filter(models.UserCredential.platform == "naukri").first()
+                        db.close()
+
+                        if cred and cred.username and cred.password:
+                            login_user.first.fill(cred.username)
+                            login_pass = page.locator("#passwordField, input[type='password']")
+                            if login_pass.count() > 0:
+                                login_pass.first.fill(cred.password)
+                            submit = page.locator("button[type='submit'], button:has-text('Login')")
+                            if submit.count() > 0:
+                                submit.first.click()
+                                page.wait_for_timeout(4000)
+                                log("NaukriPortalPlugin: Authenticated via in-page login modal.")
+                    except Exception as auth_err:
+                        log(f"NaukriPortalPlugin: In-page login failed: {auth_err}")
 
                 # Quick Apply Form or chatbot questionnaire checking
                 form_selectors = [
@@ -282,7 +340,7 @@ class NaukriPortalPlugin(BasePortal):
                             "needs_review": True
                         }
 
-                log("NaukriPortalPlugin: Quick Apply successful.")
+                log("NaukriPortalPlugin: Quick Apply successful on user's Naukri profile.")
                 client.capture_state_screenshot("naukri_quick_applied")
                 return {"success": True, "logs": "\n".join(logs), "error": None}
 

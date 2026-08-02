@@ -26,21 +26,28 @@ async def scrape_jobs(
     
     if platform:
         plat_name = platform.lower().strip()
-        cred = db.query(models.UserCredential).filter(models.UserCredential.platform == plat_name).first()
-        if not cred or not cred.session_cookies:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Active login session for {platform} not found. Please connect your account and verify connection first."
+        AUTHENTICATED_PLATFORMS = ["naukri", "linkedin", "wellfound", "workday"]
+
+        if plat_name in AUTHENTICATED_PLATFORMS:
+            cred = db.query(models.UserCredential).filter(models.UserCredential.platform == plat_name).first()
+            if not cred or not cred.session_cookies:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Active login session for '{platform}' not found. Please connect your {platform.capitalize()} account under Candidate Profile & Accounts (Tab 1) first."
+                )
+
+            import asyncio
+            scraped_list = await asyncio.to_thread(
+                discover_jobs_via_platform,
+                platform=plat_name,
+                cookies=cred.session_cookies,
+                keyword=query,
+                location=location,
+                max_jobs=max_jobs,
             )
-        import asyncio
-        scraped_list = await asyncio.to_thread(
-            discover_jobs_via_platform,
-            platform=plat_name,
-            cookies=cred.session_cookies,
-            keyword=query,
-            location=location,
-            max_jobs=max_jobs,
-        )
+        else:
+            # Public ATS / Public Web Board (No account login needed)
+            scraped_list = search_jobs_on_web(query, location)
     else:
         scraped_list = search_jobs_on_web(query, location)
         

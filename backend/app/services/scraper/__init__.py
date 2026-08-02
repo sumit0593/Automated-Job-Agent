@@ -147,64 +147,92 @@ def discover_jobs_via_platform(
 
 def search_jobs_on_web(query: str, location: str = "") -> List[Dict[str, Any]]:
     """
-    Fallback web search using Greenhouse ATS plugin directly if keyword is a company name.
+    Public Job Discovery engine:
+    1. If query is a specific company (e.g. 'stripe', 'figma'), queries company Greenhouse API.
+    2. If query is a job keyword (e.g. 'GenAI', 'Python', 'Full Stack'), scans active public tech boards
+       (Stripe, Figma, Reddit, Scale AI, Cloudflare, etc.) and filters matching role titles & descriptions.
     """
+    import json
+    import urllib.request
+    import re
+    from backend.app.services.parser import EXPANDED_SKILLS_DICTIONARY
+
     normalized_query = query.lower().strip()
-    greenhouse_boards = ["stripe", "figma", "airbnb", "reddit", "lyft", "github"]
-    
-    board = None
-    if normalized_query and " " not in normalized_query:
-        board = normalized_query
+    known_boards = [
+        "stripe", "figma", "airbnb", "reddit", "lyft", "github", 
+        "cloudflare", "coinbase", "datadog", "instacart", "scaleai", 
+        "cohere", "door-dash", "discord", "canva", "roblox", "robinhood"
+    ]
+
+    target_boards = []
+    if normalized_query in known_boards:
+        target_boards = [normalized_query]
     else:
-        for b in greenhouse_boards:
-            if b in normalized_query:
-                board = b
-                break
-                
-    if board:
-        logger.info(f"Scraper: Fetching public Greenhouse board API for '{board}'...")
-        import json
-        import urllib.request
-        import re
+        # Check if any known board is inside the query
+        matching_single = [b for b in known_boards if b in normalized_query]
+        if matching_single:
+            target_boards = matching_single
+        else:
+            # Query keyword across top tech company boards!
+            target_boards = known_boards
+
+    logger.info(f"Scraper: Searching public job boards across {len(target_boards)} companies for '{query}'...")
+    all_found_jobs = []
+    
+    for board in target_boards:
         url = f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs?content=true"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=15) as response:
+            with urllib.request.urlopen(req, timeout=8) as response:
                 data = json.loads(response.read().decode("utf-8"))
                 jobs = data.get("jobs", [])
                 
-                parsed_jobs = []
                 for j in jobs:
-                    title = j.get("title")
-                    job_url = j.get("absolute_url")
+                    title = j.get("title", "")
+                    job_url = j.get("absolute_url", "")
                     loc_name = j.get("location", {}).get("name", "Remote")
                     description_html = j.get("content", "")
                     description = re.sub('<[^<]+?>', '', description_html)
                     
-                    # Extract skills dynamically from job description
-                    from backend.app.services.parser import COMMON_SKILLS
+                    title_lower = title.lower()
                     desc_lower = description.lower()
-                    extracted_skills = []
-                    for sk in COMMON_SKILLS:
-                        if re.search(r"\b" + re.escape(sk) + r"\b", desc_lower):
-                            extracted_skills.append(sk.capitalize())
-                    if not extracted_skills:
-                        extracted_skills = [query.capitalize()]
+                    loc_lower = loc_name.lower()
 
-                    parsed_jobs.append({
-                        "title": title,
-                        "company": board.capitalize(),
-                        "description": description[:1200],
-                        "url": job_url,
-                        "location": loc_name,
-                        "skills_required": extracted_skills,
-                        "experience_required": 2.0
-                    })
-                return parsed_jobs
-        except Exception as e:
-            logger.error(f"Scraper: Greenhouse API check failed: {e}")
-            
-    return []
+                    # Keyword match check
+                    keyword_match = (
+                        normalized_query in title_lower or 
+                        normalized_query in desc_lower or 
+                        any(term in title_lower for term in normalized_query.split())
+                    )
+                    
+                    # Location match check (if specified)
+                    loc_match = True
+                    if location:
+                        loc_terms = [t.strip().lower() for t in location.split(",") if t.strip()]
+                        loc_match = any(lt in loc_lower or "remote" in loc_lower for lt in loc_terms)
+
+                    if keyword_match and loc_match:
+                        extracted_skills = []
+                        for sk in EXPANDED_SKILLS_DICTIONARY:
+                            if re.search(r"\b" + re.escape(sk) + r"\b", desc_lower, re.IGNORECASE):
+                                extracted_skills.append(sk.capitalize())
+                        if not extracted_skills:
+                            extracted_skills = [query.capitalize()]
+
+                        all_found_jobs.append({
+                            "title": title,
+                            "company": board.capitalize(),
+                            "description": description[:1200],
+                            "url": job_url,
+                            "location": loc_name,
+                            "skills_required": extracted_skills,
+                            "experience_required": 2.0
+                        })
+        except Exception:
+            continue
+
+    logger.info(f"Scraper: Found {len(all_found_jobs)} matching job listings for '{query}'.")
+    return all_found_jobs
 
 
 def automate_application_flow(
