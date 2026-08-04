@@ -174,4 +174,7 @@ pm2 logs
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Copyright © 2025–2026 Sumit Kumar. All Rights Reserved.
+
+This repository is private and contains proprietary software, automation logic, and related assets.
+No part of this project may be copied, modified, redistributed, or used without prior written permission from the author.
